@@ -1,0 +1,13 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+aggregator_error.log
+.agents/
+.tmp/
+.pytest_cache/
+claude-memory-compiler/
+wiki/
+Примеры таблиц/
+

@@ -1,0 +1,5 @@
+xlrd
+openpyxl
+rich
+pytest
+pyinstaller
