@@ -11,3 +11,25 @@ claude-memory-compiler/
 wiki/
 Примеры таблиц/
 
+
+# --- AI assistants, IDE/OS and build cache (added by cleanup) ---
+.claude/
+.cursor/
+.windsurf/
+.aider*
+CLAUDE.md
+.github/copilot-instructions.md
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+build/
+dist/
+*.egg-info/
