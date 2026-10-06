@@ -45,9 +45,11 @@ def resolve_input_path(raw: str, base_dir: Path | None = None) -> Path:
     if not path.is_absolute():
         path = (base_dir or Path.cwd()) / path
 
+    # Расширение дописываем к имени целиком: у «данные.2024» suffix — «.2024»,
+    # и with_suffix его бы затёр
     candidates = [path]
-    if not path.suffix:
-        candidates = [path.with_suffix(ext) for ext in _DEFAULT_EXTENSIONS]
+    if path.name and path.suffix.lower() not in _DEFAULT_EXTENSIONS:
+        candidates += [path.with_name(path.name + ext) for ext in _DEFAULT_EXTENSIONS]
 
     for candidate in candidates:
         if candidate.is_file():

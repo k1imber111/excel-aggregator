@@ -11,7 +11,6 @@ import zipfile
 from pathlib import Path
 
 import xlrd
-from xlrd.biffh import XLRDError
 
 from .errors import (
     CorruptedFileError,
@@ -73,16 +72,13 @@ def _map_open_error(exc: Exception, path: Path):
 def _load_xls(path: Path) -> Workbook:
     try:
         book = xlrd.open_workbook(str(path), formatting_info=True)
-    except XLRDError as exc:
-        # formatting_info может мешать на экзотических файлах — пробуем без него
+    except Exception:
+        # formatting_info может мешать на экзотических файлах (xlrd бросает
+        # не только XLRDError) — пробуем без него, без merged cells
         try:
             book = xlrd.open_workbook(str(path))
-        except XLRDError as exc2:
-            raise _map_open_error(exc2, path) from exc2
-        else:
-            return _xls_grids(path, book)
-    except Exception as exc:
-        raise _map_open_error(exc, path) from exc
+        except Exception as exc:
+            raise _map_open_error(exc, path) from exc
     return _xls_grids(path, book)
 
 
@@ -100,6 +96,12 @@ def _xls_grids(path: Path, book) -> Workbook:
                     xlrd.XL_CELL_ERROR,
                 ):
                     row.append(None)
+                elif cell.ctype == xlrd.XL_CELL_DATE:
+                    # xlrd отдаёт дату порядковым числом (43214.0) — в дату
+                    try:
+                        row.append(xlrd.xldate_as_datetime(cell.value, book.datemode))
+                    except (ValueError, OverflowError):
+                        row.append(cell.value)
                 else:
                     row.append(cell.value)
             data.append(row)

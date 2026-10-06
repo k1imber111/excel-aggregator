@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook as _XlsxWorkbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from .errors import OutputWriteError
@@ -54,20 +56,19 @@ def export(path: Path, headers: list[str], rows: list[list], key_title: str = "�
     - данные: тонкие границы, вертикальное выравнивание по центру;
     - автоподбор ширины столбцов (мин 10, макс 50);
     - freeze_panes="A2", автофильтр, без скрытых строк/столбцов;
-    - числа пишутся числами; строки с ведущими нулями — текстом ("@").
+    - числа и даты пишутся как есть; строки с ведущими нулями — текстом ("@");
+    - управляющие символы, недопустимые в .xlsx, из текста удаляются.
     """
     path = Path(path)
     if not headers:
         headers = [key_title]
-    if path.parent and not path.parent.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = _XlsxWorkbook()
     ws = wb.active
     ws.title = "Итог"
 
     for col, title in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=title)
+        cell = ws.cell(row=1, column=col, value=ILLEGAL_CHARACTERS_RE.sub("", str(title)))
         cell.fill = _HEADER_FILL
         cell.font = _HEADER_FONT
         cell.alignment = _HEADER_ALIGNMENT
@@ -76,12 +77,12 @@ def export(path: Path, headers: list[str], rows: list[list], key_title: str = "�
     for r, row in enumerate(rows, start=2):
         for c, value in enumerate(row, start=1):
             cell = ws.cell(row=r, column=c)
-            if isinstance(value, bool) or value is None:
-                cell.value = value
-            elif isinstance(value, (int, float)):
-                cell.value = value  # настоящие числа остаются числами
+            if value is None or isinstance(
+                value, (bool, int, float, datetime, date, time, timedelta)
+            ):
+                cell.value = value  # настоящие числа и даты остаются собой
             else:
-                text = str(value)
+                text = ILLEGAL_CHARACTERS_RE.sub("", str(value))
                 cell.value = text
                 if _LEADING_ZERO_RE.match(text):
                     cell.number_format = "@"  # не терять ведущие нули
@@ -110,10 +111,12 @@ def export(path: Path, headers: list[str], rows: list[list], key_title: str = "�
     ws.auto_filter.ref = ws.dimensions
 
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         wb.save(path)
     except PermissionError as exc:
         raise OutputWriteError(
-            f"Не удалось записать файл «{path}»: он открыт в Excel — закройте его и повторите."
+            f"Не удалось записать файл «{path}»: он открыт в Excel (закройте его "
+            "и повторите) или в эту папку нет прав на запись."
         ) from exc
     except OSError as exc:
         raise OutputWriteError(f"Не удалось записать файл «{path}»: {exc}") from exc

@@ -17,6 +17,14 @@ def test_normalize_strings():
     assert normalize_key(" 2 2 ") == "2 2"       # пробелы внутри сохраняются
 
 
+def test_normalize_whitespace_and_decimal_comma():
+    assert normalize_key("Объект  1") == "Объект 1"      # повторные пробелы
+    assert normalize_key("Дом\n№1") == "Дом №1"          # перенос строки в ячейке
+    assert keys_equal(4.61, "4,61")                       # десятичная запятая
+    assert not keys_equal("1.10", "1.1")                  # номера пунктов — разные ключи
+    assert normalize_key(12345678901234567) == "12345678901234567"  # без потери точности
+
+
 def test_normalize_leading_zeros_preserved():
     assert normalize_key("040") == "040"
     assert normalize_key("04.61") == "04.61"
