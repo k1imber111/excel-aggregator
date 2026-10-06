@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import traceback
 from pathlib import Path
 
 from .core import (
@@ -70,11 +71,26 @@ def _program_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def log_unexpected_error() -> None:
+    """Дописывает текущее исключение в aggregator_error.log рядом с программой."""
+    try:
+        with open(_program_dir() / "aggregator_error.log", "a", encoding="utf-8") as fh:
+            traceback.print_exc(file=fh)
+    except OSError:
+        pass
+
+
+# Результаты _safe: повторить шаг / выйти в главное меню
+_RETRY = object()
+_ABORT = object()
+
+
 def _is_section_row(grid, j: int, value, vertical: bool) -> bool:
     """Строка (столбец) — титул/разделитель, а не заголовок графы?
 
-    Признаки: то же значение занимает большую часть строки (объединённый
-    титул) или в строке всего 1–2 различных значения при широкой таблице
+    Признаки: то же значение повторяется и занимает большую часть строки
+    (объединённый титул; одиночная ячейка титулом не считается — иначе в
+    таблице из двух столбцов любая шапка была бы «титулом») или в строке всего 1–2 различных значения при широкой таблице
     (строка-разделитель вроде «район 2»).
     """
     line = grid.row(j) if vertical else grid.col(j)
@@ -86,7 +102,7 @@ def _is_section_row(grid, j: int, value, vertical: bool) -> bool:
         return True
     candidate = normalize_key(value)
     same = sum(1 for v in normalized if v.casefold() == candidate.casefold())
-    if same / width >= _SECTION_SHARE:
+    if same >= 2 and same / width >= _SECTION_SHARE:
         return True
     distinct = {v.casefold() for v in normalized}
     return width >= 6 and len(distinct) <= 2
@@ -105,11 +121,13 @@ class AggregatorApp:
         self.base_keys: list[str] = []   # ключи первого файла (база для поиска)
         self.key_title = "Название"
         self.first_file_dir: Path = Path.cwd()
-        self._wb = None                  # текущая книга (первый/очередной файл)
+        self._wb = None                  # книга первого файла
         self._first_sheets: list = []
-        self._next_sheets: list = []
         self._base_orientation = Orientation.VERTICAL
-        self._block_base: int | None = None  # отметка начала блока «очередной файл»
+        # Блоки «очередной файл», по одному на каждый добавленный файл:
+        # {"base": индекс первого источника блока, "wb": книга, "sheets": листы}.
+        # Стек повторяет список шагов: текущий блок — всегда последний.
+        self._blocks: list[dict] = []
 
     # ------------------------------------------------------------------
     # главный цикл
@@ -137,13 +155,11 @@ class AggregatorApp:
         ]
         i = 0
         while 0 <= i < len(steps):
-            try:
-                action = steps[i]()
-            except AppError as exc:
-                # Понятная ошибка core-слоя: показать и повторить шаг
-                self.ui.error(exc.message)
-                self.ui.console.input("[dim]Нажмите Enter, чтобы повторить шаг...[/]")
+            action = self._safe(steps[i])
+            if action is _RETRY:
                 continue
+            if action is _ABORT:
+                return
 
             if action is None:
                 i += 1
@@ -159,20 +175,26 @@ class AggregatorApp:
                 if i == 0:
                     self.ui.warn("Это первый шаг настройки — назад вернуться нельзя.")
                 else:
+                    if steps[i] == self._step_next_file:
+                        # Уходим из блока «очередной файл»: убрать его шаги и
+                        # состояние, чтобы «назад» попал в предыдущий блок
+                        del steps[i:i + 4]
+                        self._blocks.pop()
                     i -= 1
             elif action is Command.BUILD:
                 if not self.sources:
                     self.ui.warn("Сначала настройте хотя бы один источник данных.")
                     continue
-                outcome = self._step_build()
+                outcome = self._safe(self._step_build)
                 if outcome == "restart":
                     self._reset()
+                    del steps[4:]  # шаги добавленных файлов прошлой настройки
                     i = 0
-                elif outcome is None:
+                elif outcome is None or outcome is _ABORT:
                     return  # в главное меню
                 elif outcome is Command.CANCEL:
                     return
-                # Command.BACK — остаёмся на том же шаге
+                # Command.BACK / _RETRY — остаёмся на том же шаге
             elif action is Command.CANCEL:
                 answer = self.ui.confirm(
                     "Отменить настройку и выйти в главное меню? "
@@ -181,6 +203,32 @@ class AggregatorApp:
                 )
                 if answer is True:
                     return
+
+    def _safe(self, step):
+        """Выполняет шаг, не давая ошибке стереть настройку.
+
+        AppError -> сообщение и _RETRY. Любая другая ошибка -> журнал и вопрос:
+        повторить шаг (_RETRY) или выйти в главное меню (_ABORT).
+        """
+        try:
+            return step()
+        except AppError as exc:
+            # Понятная ошибка core-слоя: показать и повторить шаг
+            self.ui.error(exc.message)
+            self.ui.console.input("[dim]Нажмите Enter, чтобы повторить шаг...[/]")
+            return _RETRY
+        except EOFError:
+            raise  # конец ввода обрабатывает main.py
+        except Exception:
+            log_unexpected_error()
+            self.ui.error(
+                "Непредвиденная ошибка на этом шаге. Настройка сохранена; "
+                "подробности записаны в файл aggregator_error.log."
+            )
+            retry = self.ui.confirm(
+                "Повторить шаг? «н» — выйти в главное меню", default=True
+            )
+            return _RETRY if retry is True else _ABORT
 
     # ------------------------------------------------------------------
     # шаг 1: путь к первому файлу
@@ -202,6 +250,7 @@ class AggregatorApp:
         self.first_file_dir = path.parent
         self.ui.success(f"Файл загружен: {path.name} (листов: {len(wb.sheets)})")
         self.ui.show_preview(wb.sheets[0], title=f"Лист «{wb.sheets[0].name}» — первые строки")
+        self.ui.pause()
         return None
 
     # ------------------------------------------------------------------
@@ -228,7 +277,6 @@ class AggregatorApp:
     def _step_first_source(self):
         self.ui.screen("Шаг 3. Названия объектов (первый файл)")
         self.sources.clear()
-        self._block_base = None
 
         idx = 0
         while idx < len(self._first_sheets):
@@ -244,7 +292,10 @@ class AggregatorApp:
                 return result
             idx += 1
 
-        self.base_keys = [k for ks, _, _ in self.sources for k in ks.keys]
+        # Без повторов: листы первого файла могут содержать одни и те же названия
+        self.base_keys = list(
+            {k.casefold(): k for ks, _, _ in self.sources for k in ks.keys}.values()
+        )
         self._base_orientation = self.sources[0][1].orientation
         return None
 
@@ -265,7 +316,7 @@ class AggregatorApp:
             allow_build=True,
         )
         if choice == 0:
-            self._block_base = None  # новый блок «очередной файл»
+            self._blocks.append({"base": len(self.sources), "wb": None, "sheets": []})
             return "add_file"
         if choice == 1:
             return Command.BUILD
@@ -276,11 +327,9 @@ class AggregatorApp:
 
     def _step_next_file(self):
         self.ui.screen("Очередной файл")
-        if self._block_base is None:
-            self._block_base = len(self.sources)
-        else:
-            # Повторный вход (шаг «назад»): убрать источники этого блока
-            del self.sources[self._block_base:]
+        block = self._blocks[-1]
+        # Повторный вход (шаг «назад»): убрать источники этого блока
+        del self.sources[block["base"]:]
         self.ui.info("Укажите путь к следующему файлу Excel.")
         self.ui.hint(allow_build=True)
         raw = self.ui.ask("Путь к файлу", allow_build=True)
@@ -288,35 +337,37 @@ class AggregatorApp:
             return raw
         path = resolve_input_path(raw)
         wb = load_workbook(path)
-        self._wb = wb
+        block["wb"] = wb
         self.ui.success(f"Файл загружен: {path.name} (листов: {len(wb.sheets)})")
         self.ui.show_preview(wb.sheets[0], title=f"Лист «{wb.sheets[0].name}» — первые строки")
+        self.ui.pause()
         return None
 
     def _step_next_sheets(self):
         self.ui.screen("Листы очередного файла")
-        sheets = self._wb.sheets
+        block = self._blocks[-1]
+        sheets = block["wb"].sheets
         if len(sheets) == 1:
             self.ui.info(f"В файле один лист: «{sheets[0].name}» — выбран автоматически.")
-            self._next_sheets = list(sheets)
+            block["sheets"] = list(sheets)
             return None
         items = [f"{sh.name}  ({sh.nrows} строк × {sh.ncols} столбцов)" for sh in sheets]
         selected = self.ui.multi_select("Выберите листы для обработки", items)
         if isinstance(selected, Command):
             return selected
-        self._next_sheets = [sheets[i] for i in selected]
-        self.ui.success(f"Выбрано листов: {len(self._next_sheets)}")
+        block["sheets"] = [sheets[i] for i in selected]
+        self.ui.success(f"Выбрано листов: {len(block['sheets'])}")
         return None
 
     def _step_next_source(self):
         self.ui.screen("Поиск названий в очередном файле")
-        if self._block_base is not None:
-            del self.sources[self._block_base:]
+        block = self._blocks[-1]
+        del self.sources[block["base"]:]
 
         idx = 0
-        while idx < len(self._next_sheets):
-            grid = self._next_sheets[idx]
-            result = self._configure_source_auto(grid, self._wb.path)
+        while idx < len(block["sheets"]):
+            grid = block["sheets"][idx]
+            result = self._configure_source_auto(grid, block["wb"].path)
             if result is Command.BACK:
                 if idx == 0:
                     return Command.BACK
@@ -385,14 +436,17 @@ class AggregatorApp:
         pos = 0
         while True:
             cand = candidates[pos]
-            where = (
-                f"столбце {col_letter(cand.index)}"
-                if self._base_orientation is Orientation.VERTICAL
-                else f"строке {cand.index + 1}"
-            )
+            orientation = self._base_orientation
+            if orientation is Orientation.VERTICAL:
+                row0, col0 = cand.first_row0, cand.index
+                where = f"столбце {col_letter(cand.index)}"
+            else:
+                row0, col0 = cand.index, cand.first_row0
+                where = f"строке {cand.index + 1}"
+            # Якорь показываем явно: названия выше него в источник не попадут
             self.ui.success(
                 f"Найдено совпадений: {cand.match_count} из {len(self.base_keys)} "
-                f"в {where}"
+                f"в {where}, чтение начнётся с ячейки {col_letter(col0)}{row0 + 1}"
             )
             sample = ", ".join(str(v) for v in cand.sample)
             self.ui.info(f"Первые значения ({len(cand.sample)} шт.): {sample}")
@@ -405,11 +459,6 @@ class AggregatorApp:
             if isinstance(choice, Command):
                 return choice
             if choice == 0:
-                if self._base_orientation is Orientation.VERTICAL:
-                    row0, col0 = cand.first_row0, cand.index
-                else:
-                    row0, col0 = cand.index, cand.first_row0
-                orientation = self._base_orientation
                 try:
                     keyset = extract_keys(grid, row0, col0, orientation)
                 except AppError as exc:
@@ -453,6 +502,7 @@ class AggregatorApp:
                     "Не удалось прочитать заголовок столбца с названиями объектов —\n"
                     "введите его название в итоговом файле",
                     default=self.key_title,
+                    short_commands=False,
                 )
                 if isinstance(title, Command):
                     return title
@@ -484,6 +534,7 @@ class AggregatorApp:
                 f"Из названий первого файла найдено: {covered} из "
                 f"{len(self.base_keys)}; новых названий добавлено: {new}"
             )
+        self.ui.pause()
         return None
 
     # ------------------------------------------------------------------
@@ -529,6 +580,7 @@ class AggregatorApp:
                     "— введите её название в итоговом файле",
                     default=f"Графа {label}",
                     allow_build=bool(self.sources),
+                    short_commands=False,
                 )
                 if isinstance(title, Command):
                     return title
@@ -616,10 +668,16 @@ class AggregatorApp:
                 return raw
             cleaned = raw.strip().strip('"').strip("'").strip()
             out = Path(cleaned)
+            if not out.name:
+                self.ui.warn("Укажите имя файла, а не только папку.")
+                continue
             if not out.is_absolute():
                 out = output_dir / out
-            if out.suffix.lower() != ".xlsx":
+            if out.suffix.lower() == ".xls":
                 out = out.with_suffix(".xlsx")
+            elif out.suffix.lower() != ".xlsx":
+                # Дописываем к имени: with_suffix обрезал бы «отчёт v1.2» до «отчёт v1»
+                out = out.with_name(out.name + ".xlsx")
 
             if out.exists():
                 overwrite = self.ui.confirm(

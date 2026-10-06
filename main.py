@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import sys
-import traceback
 
 
 def _setup_console_encoding() -> None:
@@ -24,18 +23,9 @@ def _setup_console_encoding() -> None:
             pass
 
 
-def _error_log_path() -> str:
-    """Путь к файлу журнала ошибок — рядом с программой."""
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "aggregator_error.log")
-
-
 def main() -> None:
     _setup_console_encoding()
-    from excel_aggregator.app import AggregatorApp
+    from excel_aggregator.app import AggregatorApp, log_unexpected_error
 
     app = AggregatorApp()
     while True:
@@ -49,11 +39,7 @@ def main() -> None:
             print("\nВвод завершён. Работа программы остановлена.")
             return
         except Exception:  # непредвиденная ошибка: журнал + возврат в меню
-            try:
-                with open(_error_log_path(), "a", encoding="utf-8") as fh:
-                    traceback.print_exc(file=fh)
-            except OSError:
-                pass
+            log_unexpected_error()
             print("\nПроизошла непредвиденная ошибка. "
                   "Подробности записаны в файл aggregator_error.log.")
             print("Возврат в главное меню...\n")
