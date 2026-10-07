@@ -49,7 +49,7 @@ def _real_area(data: list[list]) -> tuple[int, int]:
     return max_r + 1, max_c + 1
 
 
-def _build_grid(name: str, data: list[list], merged_ranges) -> SheetGrid:
+def _build_grid(name: str, data: list[list], merged_ranges, error_cells: int = 0) -> SheetGrid:
     """Обрезает данные до реальной области и собирает SheetGrid."""
     nrows, ncols = _real_area(data)
     trimmed = [row[:ncols] for row in data[:nrows]]
@@ -58,7 +58,9 @@ def _build_grid(name: str, data: list[list], merged_ranges) -> SheetGrid:
         for rlo, rhi, clo, chi in merged_ranges
         if rlo < nrows and clo < ncols
     ]
-    return SheetGrid(name, trimmed, clipped)
+    grid = SheetGrid(name, trimmed, clipped)
+    grid.error_cells = error_cells
+    return grid
 
 
 def _map_open_error(exc: Exception, path: Path):
@@ -86,15 +88,15 @@ def _xls_grids(path: Path, book) -> Workbook:
     sheets = []
     for sh in book.sheets():
         data = []
+        errors = 0
         for r in range(sh.nrows):
             row = []
             for c in range(sh.ncols):
                 cell = sh.cell(r, c)
-                if cell.ctype in (
-                    xlrd.XL_CELL_EMPTY,
-                    xlrd.XL_CELL_BLANK,
-                    xlrd.XL_CELL_ERROR,
-                ):
+                if cell.ctype == xlrd.XL_CELL_ERROR:
+                    errors += 1
+                    row.append(None)
+                elif cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
                     row.append(None)
                 elif cell.ctype == xlrd.XL_CELL_DATE:
                     # xlrd отдаёт дату порядковым числом (43214.0) — в дату
@@ -106,8 +108,32 @@ def _xls_grids(path: Path, book) -> Workbook:
                     row.append(cell.value)
             data.append(row)
         merged = getattr(sh, "merged_cells", []) or []
-        sheets.append(_build_grid(sh.name, data, merged))
+        sheets.append(_build_grid(sh.name, data, merged, errors))
     return Workbook(path=path, sheets=sheets)
+
+
+def _count_uncached_formulas(path: Path, book) -> dict[str, int]:
+    """Лист -> число формул, у которых в файле нет сохранённого значения.
+
+    Такие ячейки читаются пустыми (файл сохранён не из Excel или не пересчитан).
+    Подсчёт вспомогательный: при любой ошибке возвращается пустой словарь.
+    """
+    import openpyxl
+
+    counts: dict[str, int] = {}
+    try:
+        formulas = openpyxl.load_workbook(path, data_only=False, read_only=False)
+        for ws in formulas.worksheets:
+            values = book[ws.title]
+            counts[ws.title] = sum(
+                1
+                for row in ws.iter_rows()
+                for cell in row
+                if cell.data_type == "f" and values.cell(cell.row, cell.column).value is None
+            )
+    except Exception:
+        return {}
+    return counts
 
 
 def _load_xlsx(path: Path) -> Workbook:
@@ -120,10 +146,13 @@ def _load_xlsx(path: Path) -> Workbook:
     except Exception as exc:
         raise _map_open_error(exc, path) from exc
 
+    uncached = _count_uncached_formulas(path, book)
     sheets = []
     for ws in book.worksheets:
         data = []
+        errors = 0
         for row in ws.iter_rows(values_only=True):
+            errors += sum(1 for v in row if isinstance(v, str) and v in _ERROR_VALUES)
             data.append([
                 None if (v is None or (isinstance(v, str) and v.strip() == "") or v in _ERROR_VALUES)
                 else v
@@ -133,7 +162,9 @@ def _load_xlsx(path: Path) -> Workbook:
             (rng.min_row - 1, rng.max_row, rng.min_col - 1, rng.max_col)
             for rng in ws.merged_cells.ranges
         ]
-        sheets.append(_build_grid(ws.title, data, merged))
+        grid = _build_grid(ws.title, data, merged, errors)
+        grid.uncached_formulas = uncached.get(ws.title, 0)
+        sheets.append(grid)
     return Workbook(path=path, sheets=sheets)
 
 

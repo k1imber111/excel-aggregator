@@ -10,8 +10,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from ..core.models import col_letter
 from ..core.normalize import format_cell
-from .nav import HINT, HINT_NO_BUILD, HINT_WORDS, Command, parse_command
+from .nav import HINT, HINT_NO_BUILD, Command, parse_command
 
 _TITLE = "АГРЕГАТОР EXCEL-ТАБЛИЦ"
 _AUTHOR = "Автор: Иван Журавлев"
@@ -49,7 +50,6 @@ class UI:
         self.header(subtitle)
 
     # --- сообщения ------------------------------------------------------
-
     # Текст сообщений печатается буквально (markup=False): в нём бывают имена
     # файлов и значения ячеек, а «[final]» или «[/]» rich принял бы за разметку.
 
@@ -65,6 +65,10 @@ class UI:
     def error(self, msg: str) -> None:
         self.console.print(f"✖ {msg}", style="bold red", markup=False)
 
+    def explain(self, text: str) -> None:
+        """Пояснение к шагу: что происходит и что вводить."""
+        self.console.print(Panel(Text(text), border_style="dim", padding=(0, 1)))
+
     def pause(self) -> None:
         """Ждёт Enter, чтобы сообщения не стёрла очистка следующего экрана.
 
@@ -78,48 +82,62 @@ class UI:
         """Строка-подсказка с навигационными командами."""
         self.console.print(f"[dim]{HINT if allow_build else HINT_NO_BUILD}[/]")
 
-    # --- превью ----------------------------------------------------------
+    # --- таблицы ----------------------------------------------------------
 
-    def show_preview(self, grid, title: str = "Предпросмотр") -> None:
-        """Первые строки листа в виде таблицы с буквами столбцов."""
-        rows = grid.preview_rows(_PREVIEW_ROWS)
-        ncols = min(grid.ncols, _PREVIEW_COLS)
-        from ..core.models import col_letter
-
+    def show_table(self, title: str, columns: list[str], rows: list[list[str]],
+                   dim_rows: set[int] | None = None) -> None:
+        """Таблица-сводка; dim_rows — номера строк, показанных приглушённо."""
         table = Table(title=escape(title), title_justify="left", show_lines=False)
+        for column in columns:
+            table.add_column(column, overflow="fold")
+        for i, row in enumerate(rows):
+            style = "dim" if dim_rows and i in dim_rows else None
+            table.add_row(*[escape(str(cell)) for cell in row], style=style)
+        self.console.print(table)
+
+    def show_preview(self, grid, title: str = "Предпросмотр", limit: int = _PREVIEW_ROWS) -> None:
+        """Первые непустые строки листа с номерами строк и буквами столбцов."""
+        ncols = min(grid.ncols, _PREVIEW_COLS)
+        table = Table(title=escape(title), title_justify="left", show_lines=False)
+        table.add_column("стр.", justify="right", style="dim")
         for c in range(ncols):
             table.add_column(col_letter(c), overflow="fold", max_width=_CELL_MAX)
-        for row in rows:
-            table.add_row(*[escape(str(format_cell(v))[:_CELL_MAX]) for v in row[:ncols]])
+        shown = 0
+        for r in range(grid.nrows):
+            row = grid.row(r)
+            if not any(v is not None and str(v).strip() != "" for v in row):
+                continue
+            table.add_row(
+                str(r + 1), *[escape(str(format_cell(v))[:_CELL_MAX]) for v in row[:ncols]]
+            )
+            shown += 1
+            if shown >= limit:
+                break
         self.console.print(table)
         note = []
-        if grid.nrows > _PREVIEW_ROWS:
+        if grid.nrows > shown:
             note.append(f"строк всего: {grid.nrows}")
         if grid.ncols > _PREVIEW_COLS:
             note.append(f"столбцов всего: {grid.ncols}")
         if note:
-            self.console.print(f"[dim](показаны первые строки; {', '.join(note)})[/]")
+            self.console.print(f"[dim](показано начало листа; {', '.join(note)})[/]")
 
     # --- ввод ------------------------------------------------------------
 
     def ask(self, prompt: str, default: str | None = None,
-            allow_build: bool = False, display_default: str | None = None,
-            short_commands: bool = True) -> str | Command:
+            allow_build: bool = False, display_default: str | None = None) -> str | Command:
         """Текстовый ввод. Пустой ввод -> default (если есть).
 
-        Навигационные команды возвращаются как Command. short_commands=False —
-        принимаются только команды-слова (для ввода названий: «Y», «Н»).
+        Навигационные команды возвращаются как Command.
         """
         shown_default = display_default if display_default is not None else default
         suffix = f" [{shown_default}]" if shown_default else ""
-        if not short_commands:
-            self.console.print(f"[dim]{HINT_WORDS}[/]")
         while True:
             raw = self.console.input(f"[bold cyan]{escape(prompt + suffix)}:[/] ").strip()
-            cmd = parse_command(raw, short=short_commands)
+            cmd = parse_command(raw)
             if cmd is not None:
                 if cmd is Command.BUILD and not allow_build:
-                    self.warn("Сначала настройте хотя бы один источник данных.")
+                    self.warn("Собирать ещё нечего: сначала добавьте файлы и проверьте найденное.")
                     continue
                 return cmd
             if not raw:
@@ -129,23 +147,29 @@ class UI:
                 continue
             return raw
 
-    def choose(self, title: str, options: list[str],
-               allow_back: bool = True, allow_build: bool = False) -> int | Command:
-        """Меню с нумерованными вариантами -> индекс (0-based) или Command."""
+    def choose(self, title: str, options: list[str], allow_back: bool = True,
+               allow_build: bool = False, default: int | None = None) -> int | Command:
+        """Меню с нумерованными вариантами -> индекс (0-based) или Command.
+
+        default — вариант, который выбирает пустой ввод (Enter).
+        """
         self.console.print(f"[bold]{escape(title)}[/]")
         for i, opt in enumerate(options, start=1):
-            self.console.print(f"  [cyan]{i}[/]. {escape(opt)}")
+            mark = "  [dim](Enter)[/]" if default == i - 1 else ""
+            self.console.print(f"  [cyan]{i}[/]. {escape(opt)}{mark}")
         if allow_back or allow_build:
             self.hint(allow_build=allow_build)
         while True:
             raw = self.console.input("[bold cyan]Ваш выбор:[/] ").strip()
+            if not raw and default is not None:
+                return default
             cmd = parse_command(raw)
             if cmd is not None:
                 if cmd is Command.BACK and not allow_back:
                     self.warn("Здесь нет возврата назад.")
                     continue
                 if cmd is Command.BUILD and not allow_build:
-                    self.warn("Сначала настройте хотя бы один источник данных.")
+                    self.warn("Собирать ещё нечего: сначала добавьте файлы и проверьте найденное.")
                     continue
                 return cmd
             try:
@@ -157,23 +181,29 @@ class UI:
                 return num - 1
             self.warn(f"Варианта с номером {num} нет — выберите от 1 до {len(options)}.")
 
-    def multi_select(self, title: str, items: list[str]) -> list[int] | Command:
-        """Мультивыбор номеров: «1,3» / «1-3» / «все» / «кроме: 2,4»."""
+    def multi_select(self, title: str, items: list[str], default_all: bool = False,
+                     allow_build: bool = False) -> list[int] | Command:
+        """Мультивыбор номеров: «1,3» / «1-3» / «все» / «кроме: 2,4».
+
+        default_all — пустой ввод (Enter) выбирает все пункты.
+        """
         self.console.print(f"[bold]{escape(title)}[/]")
         for i, item in enumerate(items, start=1):
             self.console.print(f"  [cyan]{i}[/]. {escape(item)}")
         self.console.print(
-            "[dim]Можно выбрать: 2,4; диапазоны: 2-5, 6, 8, 12-16; "
-            "все пункты: «все»; всё кроме указанных: «кроме: 2,4» или "
-            "«кроме: 2-5, 8».[/]"
+            ("[dim]Enter — выбрать все. " if default_all else "[dim]")
+            + "Отдельные номера: 2,4; диапазоны: 2-5, 8, 12-16; "
+            "всё кроме указанных: «кроме: 2,4» или «кроме: 2-5, 8».[/]"
         )
-        self.hint(allow_build=False)
+        self.hint(allow_build=allow_build)
         while True:
             raw = self.console.input("[bold cyan]Ваш выбор:[/] ").strip()
+            if not raw and default_all:
+                return list(range(len(items)))
             cmd = parse_command(raw)
             if cmd is not None:
-                if cmd is Command.BUILD:
-                    self.warn("Сначала настройте хотя бы один источник данных.")
+                if cmd is Command.BUILD and not allow_build:
+                    self.warn("Сначала выберите пункты.")
                     continue
                 return cmd
             lowered = raw.casefold()

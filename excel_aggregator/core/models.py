@@ -92,11 +92,17 @@ class SheetGrid:
         # Выровнять строки до одной длины
         self._data = [list(r) + [None] * (self.ncols - len(r)) for r in data]
         self._merged: dict[tuple[int, int], tuple[int, int]] = {}
+        # якорь диапазона -> (rlo, rhi, clo, chi)
+        self._spans: dict[tuple[int, int], tuple[int, int, int, int]] = {}
         for rlo, rhi, clo, chi in merged_ranges or []:
+            self._spans[(rlo, clo)] = (rlo, rhi, clo, chi)
             for r in range(rlo, rhi):
                 for c in range(clo, chi):
                     if (r, c) != (rlo, clo):
                         self._merged[(r, c)] = (rlo, clo)
+        # Счётчики для отчёта (заполняет reader)
+        self.error_cells = 0          # ячейки-ошибки (#REF! и т.п.), прочитаны пустыми
+        self.uncached_formulas = 0    # формулы .xlsx без сохранённого значения
 
     def value(self, r: int, c: int):
         """Значение ячейки (0-based) с учётом развёрнутых merged cells."""
@@ -106,6 +112,36 @@ class SheetGrid:
         if 0 <= r < self.nrows and 0 <= c < self.ncols:
             return self._data[r][c]
         return None
+
+    def anchor(self, r: int, c: int) -> tuple[int, int]:
+        """Верхне-левая ячейка объединения, в которое входит (r, c)."""
+        return self._merged.get((r, c), (r, c))
+
+    def raw(self, r: int, c: int):
+        """Значение без разворота объединений: у «хвоста» объединения — None."""
+        if (r, c) in self._merged:
+            return None
+        return self.value(r, c)
+
+    def span(self, r: int, c: int) -> tuple[int, int, int, int]:
+        """Диапазон (rlo, rhi, clo, chi) объединения с ячейкой (r, c); rhi/chi не включены."""
+        ar, ac = self.anchor(r, c)
+        return self._spans.get((ar, ac), (ar, ar + 1, ac, ac + 1))
+
+    def transposed(self) -> "SheetGrid":
+        """Тот же лист, повёрнутый: строки становятся столбцами.
+
+        Нужен для таблиц, где названия объектов идут в строку: после поворота
+        с ними работает обычная «вертикальная» логика.
+        """
+        grid = SheetGrid(
+            self.name,
+            [list(col) for col in zip(*self._data)],
+            [(clo, chi, rlo, rhi) for rlo, rhi, clo, chi in self._spans.values()],
+        )
+        grid.error_cells = self.error_cells
+        grid.uncached_formulas = self.uncached_formulas
+        return grid
 
     def row(self, r: int) -> list:
         """Строка целиком (0-based)."""
@@ -135,7 +171,9 @@ class SourceConfig:
     key_index — номер столбца (VERTICAL) или строки (HORIZONTAL) ключа.
     char_columns — 0-based индексы столбцов (VERTICAL) или строк
     (HORIZONTAL) характеристик. column_titles — имена итоговых столбцов
-    в том же порядке.
+    в том же порядке. column_paths — те же названия цепочкой уровней шапки
+    («Полярные координаты», «Ап, град») для многоуровневой шапки итога;
+    если пусто, берётся column_titles.
     """
 
     file_path: Path
@@ -145,6 +183,7 @@ class SourceConfig:
     key_index: int
     char_columns: list[int] = field(default_factory=list)
     column_titles: list[str] = field(default_factory=list)
+    column_paths: list[list[str]] = field(default_factory=list)
 
 
 @dataclass

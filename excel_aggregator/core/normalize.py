@@ -45,6 +45,19 @@ def normalize_key(v) -> str | None:
     return s
 
 
+# Латинские буквы, неотличимые на глаз от кириллических (по заглавным: B = В)
+_LOOKALIKES = str.maketrans("abcehkmoptxy", "авсенкмортху")
+
+
+def fold_lookalikes(key: str) -> str:
+    """Форма ключа, в которой латинские буквы-двойники заменены кириллицей.
+
+    «A1» (латиница) и «А1» (кириллица) дают одно значение. Применяется только
+    по решению пользователя: программа показывает такие пары и спрашивает.
+    """
+    return key.casefold().translate(_LOOKALIKES)
+
+
 def keys_equal(a, b) -> bool:
     """Сравнение ключей через normalize_key; для текста — без учёта регистра."""
     ka, kb = normalize_key(a), normalize_key(b)

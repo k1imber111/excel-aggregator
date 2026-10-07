@@ -26,16 +26,8 @@ _COMMAND_KEYS = {
 
 HINT = "н — назад | с — собрать файл | о — отмена"
 HINT_NO_BUILD = "н — назад | о — отмена"
-HINT_WORDS = "Команды здесь — целым словом: назад | собрать | отмена"
 
 
-def parse_command(text: str, short: bool = True) -> Command | None:
-    """Распознаёт навигационную команду; обычный ввод -> None.
-
-    short=False — только команды-слова: однобуквенный ввод («Y», «Н», «С»)
-    остаётся текстом. Нужно там, где пользователь вводит название графы.
-    """
-    key = (text or "").strip().casefold()
-    if not short and len(key) == 1:
-        return None
-    return _COMMAND_KEYS.get(key)
+def parse_command(text: str) -> Command | None:
+    """Распознаёт навигационную команду; обычный ввод -> None."""
+    return _COMMAND_KEYS.get((text or "").strip().casefold())

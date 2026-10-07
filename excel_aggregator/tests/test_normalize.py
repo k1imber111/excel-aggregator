@@ -1,6 +1,11 @@
 """Unit-тесты: normalize_key / keys_equal / format_cell."""
 
-from excel_aggregator.core.normalize import format_cell, keys_equal, normalize_key
+from excel_aggregator.core.normalize import (
+    fold_lookalikes,
+    format_cell,
+    keys_equal,
+    normalize_key,
+)
 
 
 def test_normalize_numbers():
@@ -56,3 +61,9 @@ def test_format_cell():
     assert format_cell(2.5) == 2.5
     assert format_cell(None) == ""
     assert format_cell("040") == "040"
+
+
+def test_fold_lookalikes():
+    assert fold_lookalikes("A1") == fold_lookalikes("А1")      # латинская и русская А
+    assert fold_lookalikes("T14A") == fold_lookalikes("Т14А")
+    assert fold_lookalikes("A1") != fold_lookalikes("B1")

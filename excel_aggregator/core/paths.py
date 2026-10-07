@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from .errors import PathNotFoundError
@@ -57,3 +58,42 @@ def resolve_input_path(raw: str, base_dir: Path | None = None) -> Path:
 
     tried = ", ".join(str(c) for c in candidates)
     raise PathNotFoundError(f"Файл не найден: {tried}")
+
+
+def _expand_one(text: str, base_dir: Path | None) -> list[Path]:
+    """Один путь -> файлы: папка раскрывается в свои таблицы Excel."""
+    cleaned = _strip_quotes(text)
+    path = Path(os.path.expandvars(os.path.expanduser(cleaned))) if cleaned else None
+    if path is not None and not path.is_absolute():
+        path = (base_dir or Path.cwd()) / path
+    if path is not None and path.is_dir():
+        files = sorted(
+            f for f in path.iterdir()
+            if f.is_file()
+            and f.suffix.lower() in _DEFAULT_EXTENSIONS
+            and not f.name.startswith("~$")  # временные файлы открытых книг
+        )
+        if not files:
+            raise PathNotFoundError(f"В папке «{path}» нет файлов Excel (.xls, .xlsx).")
+        return files
+    return [resolve_input_path(text, base_dir)]
+
+
+def expand_inputs(raw: str, base_dir: Path | None = None) -> list[Path]:
+    """Строка ввода -> список файлов Excel.
+
+    Принимает путь к файлу, путь к папке (берутся все .xls/.xlsx в ней) или
+    несколько путей в одной строке — так их вставляет консоль при
+    перетаскивании нескольких файлов: "C:\\a b.xls" "C:\\c.xls".
+    """
+    try:
+        return _expand_one(raw or "", base_dir)
+    except PathNotFoundError:
+        tokens = re.findall(r'"[^"]+"|\S+', raw or "")
+        if len(tokens) < 2:
+            raise
+        try:
+            return [f for token in tokens for f in _expand_one(token, base_dir)]
+        except PathNotFoundError:
+            pass
+        raise  # строка не делится на пути — показываем ошибку для неё целиком

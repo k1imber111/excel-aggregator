@@ -90,3 +90,22 @@ def test_matcher_horizontal():
     assert candidates[0].index == 0
     assert candidates[0].match_count == 3
     assert candidates[0].first_row0 == 1
+
+
+def test_caption_rows_are_not_keys():
+    grid = SheetGrid("Лист", [
+        ["Название", "Высота"],
+        ["район 2", None],        # подпись раздела: несколько слов и больше ничего в строке
+        ["A", 1],
+        ["Итого", 5],             # строка итога — даже с числами
+        ["B", 2],
+        ["X1", None],             # одиночный код без характеристик — объект
+    ])
+    ks = extract_keys(grid, 1, 0, Orientation.VERTICAL)
+    assert ks.keys == ["A", "B", "X1"]
+    assert ks.skipped == [(1, "район 2"), (3, "Итого")]
+
+
+def test_duplicate_rows_are_reported():
+    ks = extract_keys(make_grid(), 1, 0, Orientation.VERTICAL)
+    assert ks.duplicate_rows == [5]      # 0-based строка повтора «2»
