@@ -47,17 +47,35 @@ _TITLE_ROW_HEIGHT = 30
 _DATE_FORMAT = "DD.MM.YYYY"
 _DATETIME_FORMAT = "DD.MM.YYYY HH:MM"
 _TIME_FORMAT = "HH:MM:SS"
+_DURATION_FORMAT = "[HH]:MM:SS"   # длительность от суток и больше не обрезается
+
+# Пределы листа Excel
+_MAX_COLUMNS = 16384
+_MAX_ROWS = 1048576
+# Точнее Excel целое не хранит (число двойной точности)
+_MAX_EXACT_INT = 2 ** 53
+# Суррогаты и U+FFFE/U+FFFF недопустимы в XML, а ILLEGAL_CHARACTERS_RE их пропускает
+_XML_INVALID_RE = re.compile(
+    "[%s-%s%s%s]" % (chr(0xD800), chr(0xDFFF), chr(0xFFFE), chr(0xFFFF))
+)
 
 _AS_IS = (bool, int, float, datetime, date, time, timedelta)
 
 
 def _clean(text) -> str:
     """Текст, допустимый в .xlsx: без управляющих символов, переводы строк — «\\n»."""
-    return ILLEGAL_CHARACTERS_RE.sub("", str(text)).replace("\r\n", "\n").replace("\r", "\n")
+    text = _XML_INVALID_RE.sub("", ILLEGAL_CHARACTERS_RE.sub("", str(text)))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _cell_value(value, is_key: bool = False):
-    """Значение, которое попадёт в ячейку: числа и даты — как есть, остальное — текст."""
+    """Значение, которое попадёт в ячейку: числа и даты — как есть, остальное — текст.
+
+    Целое длиннее 2**53 (18-значный код) Excel числом не сохранит без потери
+    цифр — оно пишется текстом.
+    """
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _MAX_EXACT_INT:
+        return str(value)
     if value is None or isinstance(value, _AS_IS):
         return value
     text = _clean(value)
@@ -76,7 +94,9 @@ def _cell_format(value, fmt: str | None) -> str | None:
         return _DATETIME_FORMAT if value.time() != time() else _DATE_FORMAT
     if isinstance(value, date):
         return _DATE_FORMAT
-    if isinstance(value, (time, timedelta)):
+    if isinstance(value, timedelta):
+        return _DURATION_FORMAT
+    if isinstance(value, time):
         return _TIME_FORMAT
     return None
 
@@ -176,6 +196,10 @@ def _verify(
                 min_row=data_row, max_row=data_row + len(rows) - 1, max_col=ncols
             )
         ] if rows else []
+    except Exception as exc:  # строки читаются лениво: битый XML всплывает здесь
+        raise OutputWriteError(
+            f"Файл «{path}» записан, но не читается для проверки: {exc}"
+        ) from exc
     finally:
         book.close()
     if len(written) != len(rows):
@@ -311,6 +335,16 @@ def export(
     if header_blocks is None:
         paths = header_paths or [[h] for h in (headers or [key_title])]
         header_blocks = _blocks_from_paths([[str(level) for level in p] or [""] for p in paths])
+    ncols_total = len(header_blocks)
+    if ncols_total > _MAX_COLUMNS:
+        raise OutputWriteError(
+            f"В итоге {ncols_total} столбцов, а лист Excel вмещает не больше {_MAX_COLUMNS}. "
+            "Выберите меньше столбцов на шаге 3."
+        )
+    if len(rows) + len(max(header_blocks, key=len)) + 2 > _MAX_ROWS:
+        raise OutputWriteError(
+            f"В итоге {len(rows)} строк, а лист Excel вмещает не больше {_MAX_ROWS}."
+        )
     ids, texts = _resolve_header(header_blocks)
     regions = _regions(ids)
     ncols = len(header_blocks)
@@ -327,6 +361,7 @@ def export(
     if title:
         # Без объединения: текст сам продолжается вправо по пустым ячейкам строки
         cell = ws.cell(row=1, column=1, value=_clean(title))
+        cell.data_type = "s"  # название «=итог» — текст, не формула
         cell.font = _TITLE_FONT
         cell.alignment = Alignment(horizontal="left", vertical="center")
         ws.row_dimensions[1].height = _TITLE_ROW_HEIGHT
@@ -414,6 +449,7 @@ def export(
         if not text:
             continue
         cell = ws.cell(row=top + k0, column=j0 + 1, value=text)
+        cell.data_type = "s"  # заголовок «=Цена» — текст, не формула
         if j1 - j0 + 1 > _WIDE_GROUP:
             cell.alignment = _WIDE_ALIGNMENT
         if k1 > k0 or j1 > j0:
