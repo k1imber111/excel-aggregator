@@ -1,8 +1,10 @@
 """Чтение книг Excel (.xls через xlrd, .xlsx через openpyxl) в SheetGrid.
 
 Формат определяется по сигнатуре файла, а не по расширению.
-Merged cells разворачиваются, ячейки-ошибки (#REF! и т.п.) -> None,
-реальная область данных вычисляется по факту заполнения (DIMENSIONS не доверяем).
+Merged cells разворачиваются, ячейки-ошибки (#REF! и т.п.) и ячейки из одних
+пробелов -> None, реальная область данных вычисляется по факту заполнения
+(DIMENSIONS не доверяем). Вместе со значениями читаются форматы чисел
+(«0.0», «DD.MM.YYYY») и признак скрытого листа.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import xlrd
+from openpyxl.styles.numbers import BUILTIN_FORMATS
 
 from .errors import (
     CorruptedFileError,
@@ -49,7 +52,38 @@ def _real_area(data: list[list]) -> tuple[int, int]:
     return max_r + 1, max_c + 1
 
 
-def _build_grid(name: str, data: list[list], merged_ranges, error_cells: int = 0) -> SheetGrid:
+def _format(text: str | None) -> str | None:
+    """Формат числа ячейки; общий формат -> None."""
+    if not text or text.casefold() == "general":
+        return None
+    return text
+
+
+def _xls_format(book, xf_index: int) -> str | None:
+    """Формат ячейки .xls по индексу XF.
+
+    Встроенные форматы (код < 164) xlrd отдаёт американской строкой
+    («m/d/yy» для даты): берём код Excel, чтобы дата показывалась так, как
+    принято в системе пользователя.
+    """
+    try:
+        key = book.xf_list[xf_index].format_key
+    except (IndexError, AttributeError):
+        return None
+    if key in BUILTIN_FORMATS:
+        return _format(BUILTIN_FORMATS[key])
+    fmt = book.format_map.get(key)
+    return _format(fmt.format_str if fmt is not None else None)
+
+
+def _build_grid(
+    name: str,
+    data: list[list],
+    merged_ranges,
+    error_cells: int = 0,
+    formats: list[list] | None = None,
+    hidden: bool = False,
+) -> SheetGrid:
     """Обрезает данные до реальной области и собирает SheetGrid."""
     nrows, ncols = _real_area(data)
     trimmed = [row[:ncols] for row in data[:nrows]]
@@ -58,8 +92,10 @@ def _build_grid(name: str, data: list[list], merged_ranges, error_cells: int = 0
         for rlo, rhi, clo, chi in merged_ranges
         if rlo < nrows and clo < ncols
     ]
-    grid = SheetGrid(name, trimmed, clipped)
+    trimmed_formats = [row[:ncols] for row in formats[:nrows]] if formats else None
+    grid = SheetGrid(name, trimmed, clipped, trimmed_formats)
     grid.error_cells = error_cells
+    grid.hidden = hidden
     return grid
 
 
@@ -86,13 +122,20 @@ def _load_xls(path: Path) -> Workbook:
 
 def _xls_grids(path: Path, book) -> Workbook:
     sheets = []
+    with_formats = bool(getattr(book, "xf_list", None))
     for sh in book.sheets():
         data = []
+        formats = []
         errors = 0
         for r in range(sh.nrows):
             row = []
+            row_formats = []
             for c in range(sh.ncols):
                 cell = sh.cell(r, c)
+                row_formats.append(
+                    _xls_format(book, cell.xf_index)
+                    if with_formats and cell.xf_index is not None else None
+                )
                 if cell.ctype == xlrd.XL_CELL_ERROR:
                     errors += 1
                     row.append(None)
@@ -104,11 +147,15 @@ def _xls_grids(path: Path, book) -> Workbook:
                         row.append(xlrd.xldate_as_datetime(cell.value, book.datemode))
                     except (ValueError, OverflowError):
                         row.append(cell.value)
+                elif isinstance(cell.value, str) and not cell.value.strip():
+                    row.append(None)
                 else:
                     row.append(cell.value)
             data.append(row)
+            formats.append(row_formats)
         merged = getattr(sh, "merged_cells", []) or []
-        sheets.append(_build_grid(sh.name, data, merged, errors))
+        hidden = getattr(sh, "visibility", 0) != 0
+        sheets.append(_build_grid(sh.name, data, merged, errors, formats, hidden))
     return Workbook(path=path, sheets=sheets)
 
 
@@ -150,19 +197,24 @@ def _load_xlsx(path: Path) -> Workbook:
     sheets = []
     for ws in book.worksheets:
         data = []
+        formats = []
         errors = 0
-        for row in ws.iter_rows(values_only=True):
+        for cells in ws.iter_rows():
+            row = [cell.value for cell in cells]
             errors += sum(1 for v in row if isinstance(v, str) and v in _ERROR_VALUES)
             data.append([
                 None if (v is None or (isinstance(v, str) and v.strip() == "") or v in _ERROR_VALUES)
                 else v
                 for v in row
             ])
+            formats.append([_format(cell.number_format) for cell in cells])
         merged = [
             (rng.min_row - 1, rng.max_row, rng.min_col - 1, rng.max_col)
             for rng in ws.merged_cells.ranges
         ]
-        grid = _build_grid(ws.title, data, merged, errors)
+        grid = _build_grid(
+            ws.title, data, merged, errors, formats, ws.sheet_state != "visible"
+        )
         grid.uncached_formulas = uncached.get(ws.title, 0)
         sheets.append(grid)
     return Workbook(path=path, sheets=sheets)

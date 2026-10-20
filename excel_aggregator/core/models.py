@@ -75,7 +75,8 @@ class SheetGrid:
     """Прямоугольная проекция листа: реальная область + развёрнутые merged cells.
 
     data — плотная матрица значений (уже обрезанная до реальной области,
-    пустые ячейки — None). merged_ranges — список кортежей
+    пустые ячейки — None). formats — матрица форматов чисел той же формы
+    («0.0», «DD.MM.YYYY»; None — общий формат). merged_ranges — список кортежей
     (rlo, rhi, clo, chi) с НЕвключёнными rhi/chi (конвенция xlrd):
     значение верхне-левой ячейки доступно по всем координатам диапазона.
     """
@@ -85,12 +86,17 @@ class SheetGrid:
         name: str,
         data: list[list],
         merged_ranges: list[tuple[int, int, int, int]] | None = None,
+        formats: list[list[str | None]] | None = None,
     ):
         self.name = name
         self.nrows = len(data)
         self.ncols = max((len(r) for r in data), default=0)
         # Выровнять строки до одной длины
         self._data = [list(r) + [None] * (self.ncols - len(r)) for r in data]
+        self._formats = [
+            list(r[:self.ncols]) + [None] * (self.ncols - len(r[:self.ncols]))
+            for r in (formats or [])
+        ]
         self._merged: dict[tuple[int, int], tuple[int, int]] = {}
         # якорь диапазона -> (rlo, rhi, clo, chi)
         self._spans: dict[tuple[int, int], tuple[int, int, int, int]] = {}
@@ -103,6 +109,7 @@ class SheetGrid:
         # Счётчики для отчёта (заполняет reader)
         self.error_cells = 0          # ячейки-ошибки (#REF! и т.п.), прочитаны пустыми
         self.uncached_formulas = 0    # формулы .xlsx без сохранённого значения
+        self.hidden = False           # лист скрыт в книге
 
     def value(self, r: int, c: int):
         """Значение ячейки (0-based) с учётом развёрнутых merged cells."""
@@ -111,6 +118,13 @@ class SheetGrid:
             r, c = src
         if 0 <= r < self.nrows and 0 <= c < self.ncols:
             return self._data[r][c]
+        return None
+
+    def number_format(self, r: int, c: int) -> str | None:
+        """Формат числа ячейки (0-based) с учётом объединений; None — общий."""
+        r, c = self._merged.get((r, c), (r, c))
+        if 0 <= r < len(self._formats) and 0 <= c < self.ncols:
+            return self._formats[r][c]
         return None
 
     def anchor(self, r: int, c: int) -> tuple[int, int]:
@@ -138,9 +152,11 @@ class SheetGrid:
             self.name,
             [list(col) for col in zip(*self._data)],
             [(clo, chi, rlo, rhi) for rlo, rhi, clo, chi in self._spans.values()],
+            [list(col) for col in zip(*self._formats)] if self._formats else None,
         )
         grid.error_cells = self.error_cells
         grid.uncached_formulas = self.uncached_formulas
+        grid.hidden = self.hidden
         return grid
 
     def row(self, r: int) -> list:
@@ -173,7 +189,10 @@ class SourceConfig:
     (HORIZONTAL) характеристик. column_titles — имена итоговых столбцов
     в том же порядке. column_paths — те же названия цепочкой уровней шапки
     («Полярные координаты», «Ап, град») для многоуровневой шапки итога;
-    если пусто, берётся column_titles.
+    если пусто, берётся column_titles. header_cells — шапка этих столбцов
+    как в исходнике: на столбец — уровни (первая ячейка объединения, текст);
+    key_header — то же для столбца названий. Если header_cells пусто,
+    шапка строится из column_paths.
     """
 
     file_path: Path
@@ -184,6 +203,8 @@ class SourceConfig:
     char_columns: list[int] = field(default_factory=list)
     column_titles: list[str] = field(default_factory=list)
     column_paths: list[list[str]] = field(default_factory=list)
+    header_cells: list[list[tuple[tuple[int, int], str]]] = field(default_factory=list)
+    key_header: list[tuple[tuple[int, int], str]] = field(default_factory=list)
 
 
 @dataclass
