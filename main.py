@@ -1,6 +1,8 @@
 """Точка входа: Агрегатор Excel-таблиц.
 
 Запуск: python main.py  (или собранный «Агрегатор таблиц.exe»).
+Файлы и папки, перетащенные на значок exe (или переданные аргументами),
+сразу попадают в список файлов.
 """
 
 from __future__ import annotations
@@ -28,9 +30,10 @@ def main() -> None:
     from excel_aggregator.app import AggregatorApp, log_unexpected_error
 
     app = AggregatorApp()
+    initial = sys.argv[1:]
     while True:
         try:
-            app.run()
+            app.run(initial)
             return
         except KeyboardInterrupt:
             print("\nРабота прервана пользователем.")
@@ -43,6 +46,7 @@ def main() -> None:
             print("\nПроизошла непредвиденная ошибка. "
                   "Подробности записаны в файл aggregator_error.log.")
             print("Возврат в главное меню...\n")
+            initial = []  # файлы из командной строки — только при первом запуске
 
 
 if __name__ == "__main__":

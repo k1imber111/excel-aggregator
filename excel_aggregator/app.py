@@ -39,6 +39,7 @@ from .core import (
     find_key_candidates,
     fold_lookalikes,
     format_cell,
+    header_cells,
     layout_from,
     load_workbook,
     normalize_key,
@@ -53,6 +54,7 @@ _OUTPUT_PATH_EXAMPLE = r"C:\Users\Рабочий стол\таблица"
 _EDGE_KEYS = 3        # сколько первых и последних названий показываем на проверке
 _SAMPLE_VALUES = 3    # сколько примеров значений столбца показываем
 _LOW_OVERLAP = 0.5    # доля общих названий, ниже которой предупреждаем
+_SAME_KEYS = 0.9      # такая доля общих названий подтверждает столбец названий
 _EDIT_PREVIEW_ROWS = 12
 
 
@@ -128,6 +130,7 @@ class AggregatorApp:
         self.books: list[Workbook] = []
         self.tables: list[Table] = []
         self.skipped_sheets = 0            # листы, на которых таблица не найдена
+        self.hidden_sheets = 0             # скрытые листы, не взятые автоматически
         self.fold: bool | None = None      # считать ли буквы-двойники A/А одинаковыми
         self._notes: list[tuple[str, str]] = []   # сообщения для следующего экрана
 
@@ -149,8 +152,17 @@ class AggregatorApp:
     # ------------------------------------------------------------------
     # главный цикл
 
-    def run(self) -> None:
-        """Главное меню: Начать работу / Инструкция / Выход."""
+    def run(self, initial_paths: list[str] | None = None) -> None:
+        """Главное меню: Начать работу / Инструкция / Выход.
+
+        initial_paths — файлы или папки, перетащенные на значок программы:
+        работа начинается сразу с ними, без главного меню.
+        """
+        if initial_paths:
+            self._reset()
+            for raw in initial_paths:
+                self._add_files(f'"{raw}"')
+            self._run_flow()
         while True:
             choice = main_menu(self.ui)
             if choice == 0:
@@ -270,28 +282,32 @@ class AggregatorApp:
                     self._notes.append(("warn", f"Файла с номером {n} в списке нет."))
                 continue
 
+            self._add_files(raw)
+
+    def _add_files(self, raw: str) -> None:
+        """Добавляет файлы по введённому пути (файл, папка, несколько путей)."""
+        try:
+            files = expand_inputs(raw)
+        except AppError as exc:
+            self._notes.append(("error", exc.message))
+            return
+        for path in files:
+            if len(files) > 1 and path.name == _DEFAULT_OUTPUT_NAME:
+                self._notes.append(("warn", f"Пропущен итоговый файл программы: {path.name}"))
+                continue
+            if any(path.resolve() == book.path.resolve() for book in self.books):
+                self._notes.append(("warn", f"Файл уже добавлен: {path.name}"))
+                continue
             try:
-                files = expand_inputs(raw)
+                book = load_workbook(path)
             except AppError as exc:
                 self._notes.append(("error", exc.message))
                 continue
-            for path in files:
-                if len(files) > 1 and path.name == _DEFAULT_OUTPUT_NAME:
-                    self._notes.append(("warn", f"Пропущен итоговый файл программы: {path.name}"))
-                    continue
-                if any(path.resolve() == book.path.resolve() for book in self.books):
-                    self._notes.append(("warn", f"Файл уже добавлен: {path.name}"))
-                    continue
-                try:
-                    book = load_workbook(path)
-                except AppError as exc:
-                    self._notes.append(("error", exc.message))
-                    continue
-                self.books.append(book)
-                self._invalidate()
-                self._notes.append(
-                    ("success", f"Файл загружен: {path.name} (листов: {len(book.sheets)})")
-                )
+            self.books.append(book)
+            self._invalidate()
+            self._notes.append(
+                ("success", f"Файл загружен: {path.name} (листов: {len(book.sheets)})")
+            )
 
     # ------------------------------------------------------------------
     # автоматический разбор
@@ -320,13 +336,26 @@ class AggregatorApp:
         """Находит таблицы на листах всех файлов и столбцы, по которым их соединять."""
         tables: list[Table] = []
         self.skipped_sheets = 0
+        self.hidden_sheets = 0
         for book in self.books:
+            visible = [sheet for sheet in book.sheets if not sheet.hidden]
             found = [
                 Table(book.path, sheet, sheet, layout)
-                for sheet in book.sheets
+                for sheet in visible
                 if (layout := detect_layout(sheet)) is not None
             ]
-            self.skipped_sheets += len(book.sheets) - len(found)
+            if not found:
+                # Таблицы нет ни на одном видимом листе — ищем на скрытых
+                found = [
+                    Table(book.path, sheet, sheet, layout)
+                    for sheet in book.sheets
+                    if sheet.hidden and (layout := detect_layout(sheet)) is not None
+                ]
+                checked = book.sheets
+            else:
+                checked = visible
+                self.hidden_sheets += len(book.sheets) - len(visible)
+            self.skipped_sheets += len(checked) - len(found)
             if not found and book.sheets:
                 # Ни на одном листе таблица не распознана — показываем самый
                 # большой лист, первую строку данных укажет пользователь
@@ -483,7 +512,11 @@ class AggregatorApp:
                 else:
                     header = f"строки {head[0]}–{head[-1]}"
                 data = f"строки {layout.data_start + 1}–{table.grid.nrows}"
-            sheet = table.sheet.name.strip() + (" (повёрнут)" if table.rotated else "")
+            sheet = (
+                table.sheet.name.strip()
+                + (" (скрытый)" if table.sheet.hidden else "")
+                + (" (повёрнут)" if table.rotated else "")
+            )
             if table.keyset is None:
                 key, found, common = "—", table.problem, "—"
             else:
@@ -501,6 +534,11 @@ class AggregatorApp:
         )
         if self.skipped_sheets:
             self.ui.info(f"Листов без таблицы пропущено: {self.skipped_sheets}.")
+        if self.hidden_sheets:
+            self.ui.info(
+                f"Скрытых листов пропущено: {self.hidden_sheets} — добавить скрытый лист можно "
+                "через «Изменить источник → Добавить другой лист»."
+            )
 
         enabled = self._enabled()
         for n, table in enumerate(self.tables, start=1):
@@ -533,7 +571,11 @@ class AggregatorApp:
             )
             base = enabled[0]
             for table in enabled[1:]:
-                if _plain(table.title(table.key_col)) != _plain(base.title(base.key_col)):
+                # Заголовки разные, но почти все названия совпали — это один столбец
+                confirmed = shared.get(id(table), 0) >= _SAME_KEYS * len(table.keyset.keys)
+                if not confirmed and (
+                    _plain(table.title(table.key_col)) != _plain(base.title(base.key_col))
+                ):
                     self.ui.warn(
                         f"В таблице «{table.label}» названия объектов взяты из столбца "
                         f"«{table.title(table.key_col)}», а в первой — из "
@@ -653,7 +695,11 @@ class AggregatorApp:
             if isinstance(index, Command):
                 return index
             book = self.books[index]
-        items = [f"{s.name.strip()}  ({s.nrows} строк × {s.ncols} столбцов)" for s in book.sheets]
+        items = [
+            f"{s.name.strip()}{' (скрытый)' if s.hidden else ''}  "
+            f"({s.nrows} строк × {s.ncols} столбцов)"
+            for s in book.sheets
+        ]
         index = self.ui.choose("Какой лист добавить?", items)
         if isinstance(index, Command):
             return index
@@ -669,7 +715,10 @@ class AggregatorApp:
         self._refresh(table)
         table.enabled = table.keyset is not None
         self.tables.append(table)
-        self.skipped_sheets = max(0, self.skipped_sheets - 1)
+        if sheet.hidden:
+            self.hidden_sheets = max(0, self.hidden_sheets - 1)
+        else:
+            self.skipped_sheets = max(0, self.skipped_sheets - 1)
         return table
 
     def _ask_data_start(self, table: Table):
@@ -776,10 +825,12 @@ class AggregatorApp:
                     char_columns=columns,
                     column_titles=[table.title(c) for c in columns],
                     column_paths=[table.paths[c] for c in columns],
+                    header_cells=header_cells(table.grid, table.layout, columns),
+                    key_header=header_cells(table.grid, table.layout, [table.key_col])[0],
                 ),
                 table.grid,
             )
-        headers, rows = aggregator.build_table()
+        headers, rows, formats = aggregator.build()
 
         self.ui.info(
             f"Готово к записи: объектов — {len(rows)}, столбцов — {len(headers)}, "
@@ -835,6 +886,7 @@ class AggregatorApp:
                 checked = export(
                     out, headers, rows, key_title,
                     header_paths=aggregator.header_paths(), title=out.stem,
+                    header_blocks=aggregator.header_blocks(), formats=formats,
                 )
             except AppError as exc:
                 self.ui.error(exc.message)
