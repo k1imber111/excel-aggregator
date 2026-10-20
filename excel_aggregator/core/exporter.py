@@ -341,7 +341,7 @@ def export(
             f"В итоге {ncols_total} столбцов, а лист Excel вмещает не больше {_MAX_COLUMNS}. "
             "Выберите меньше столбцов на шаге 3."
         )
-    if len(rows) + len(max(header_blocks, key=len)) + 2 > _MAX_ROWS:
+    if (1 if title else 0) + len(max(header_blocks, key=len)) + len(rows) > _MAX_ROWS:
         raise OutputWriteError(
             f"В итоге {len(rows)} строк, а лист Excel вмещает не больше {_MAX_ROWS}."
         )

@@ -109,7 +109,8 @@ class _Column:
     values: set[str]          # различные значения области данных
     uniqueness: float         # доля неповторяющихся значений
     title: str = ""
-    named: bool = False       # в таблице есть свой текстовый столбец уникальных названий
+    # заголовки текстовых столбцов уникальных названий этой таблицы
+    name_titles: frozenset[str] = frozenset()
 
     @property
     def is_row_number(self) -> bool:
@@ -122,15 +123,22 @@ class _Column:
     @property
     def is_text_names(self) -> bool:
         """Текст без повторов: «Опора 1», «Мачта 2» — похоже на названия объектов."""
-        texts = sum(1 for v in self.values if not _NUMBER_RE.fullmatch(v))
+        texts = sum(
+            1 for v in self.values if not _NUMBER_RE.fullmatch(v) and not _MEASURE_RE.fullmatch(v)
+        )
         return self.uniqueness >= _NAMES_UNIQUENESS and texts > len(self.values) / 2
+
+    @property
+    def numeric(self) -> bool:
+        """Больше половины значений — числа."""
+        return sum(1 for v in self.values if _NUMBER_RE.fullmatch(v)) > len(self.values) / 2
 
     @property
     def quality(self) -> float:
         """Насколько столбец похож на названия объектов (0..1)."""
         half = len(self.values) / 2
         if sum(1 for v in self.values if _MEASURE_RE.fullmatch(v)) > half or (
-            self.title and _MEASURE_TITLE_RE.search(self.title)
+            self.numeric and self.title and _MEASURE_TITLE_RE.search(self.title)
         ):
             penalty = _MEASURE_PENALTY
         elif sum(1 for v in self.values if v.isdigit()) > half:
@@ -151,9 +159,11 @@ def _columns(grid: SheetGrid, data_start: int, titles: dict[int, str] | None) ->
             columns.append(
                 _Column(c, distinct, len(distinct) / len(values), (titles or {}).get(c, ""))
             )
-    named = any(col.is_text_names for col in columns)
+    names = frozenset(
+        _normal_title(col.title) for col in columns if col.is_text_names and col.title
+    )
     for col in columns:
-        col.named = named
+        col.name_titles = names
     return columns
 
 
@@ -174,9 +184,10 @@ def _pair_score(a: _Column, b: _Column) -> float:
     shared = len(a.values & b.values)
     if shared < _MIN_MATCHES:
         return 0.0
-    if a.is_row_number and b.is_row_number and a.named and b.named:
-        # «№ п/п» 1…N есть в любых двух таблицах; когда у обеих есть свои
-        # названия объектов, нумерация строк их не соединяет
+    if a.is_row_number and b.is_row_number and a.name_titles & b.name_titles:
+        # «№ п/п» 1…N есть в любых двух таблицах. Если у обеих есть столбец
+        # названий с одним заголовком, объекты различаются по нему, а не по
+        # нумерации строк
         return 0.0
     score = shared * min(a.uniqueness, b.uniqueness) * a.quality * b.quality
     if a.is_row_number and b.is_row_number:
@@ -249,7 +260,7 @@ def suggest_join(
 
     result = list(solo)
     result[anchor_table] = anchor.index
-    known = _Column(0, set(anchor.values), 1.0, anchor.title, anchor.named)
+    known = _Column(0, set(anchor.values), 1.0, anchor.title, anchor.name_titles)
     pending = set(range(len(tables))) - {anchor_table}
     while pending:
         scored = {i: best_against(i, known) for i in pending}
