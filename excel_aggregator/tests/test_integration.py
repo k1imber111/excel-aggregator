@@ -45,9 +45,10 @@ def grid3():
 def test_file1_keys(grid1):
     row0, col0 = parse_coordinate("A6")
     keyset = extract_keys(grid1, row0, col0, Orientation.VERTICAL)
-    assert len(keyset.keys) == 48
+    assert len(keyset.keys) == 3500
     assert keyset.keys[0] == "2"
-    assert keyset.keys[-1] == "50"
+    assert keyset.keys[-1] == "3824"
+    assert not keyset.duplicates
 
 
 def test_file2_matcher_finds_key_column(grid1, grid2):
@@ -57,19 +58,20 @@ def test_file2_matcher_finds_key_column(grid1, grid2):
     assert candidates
     best = candidates[0]
     assert best.index == 0
-    assert best.match_count == 48
+    assert best.match_count == 3500
 
 
 def test_file2_keys(grid2):
     row0, col0 = parse_coordinate("A7")
     keyset = extract_keys(grid2, row0, col0, Orientation.VERTICAL)
-    assert len(keyset.keys) == 577
+    assert len(keyset.keys) == 3500
+    assert keyset.keys[-1] == "3626"
 
 
 def test_file3_keys(grid3):
     row0, col0 = parse_coordinate("A9")
     keyset = extract_keys(grid3, row0, col0, Orientation.VERTICAL)
-    assert len(keyset.keys) == 25
+    assert len(keyset.keys) == 1127
 
 
 def _build_aggregator(grid1, grid2, grid3):
@@ -112,12 +114,10 @@ def test_end_to_end_union_order_and_values(grid1, grid2, grid3):
 
     assert headers[0] == "№ препятствия"
     assert len(headers) == 1 + 2 + 2 + 2
-    assert len(rows) == 577
+    assert len(rows) == 3500
 
-    # union-порядок: сначала 48 ключей файла 1, затем новые из файла 2
-    first_keys = [row[0] for row in rows[:48]]
-    assert first_keys[0] == "2" and first_keys[-1] == "50"
-    assert rows[48][0] not in first_keys   # первый новый ключ файла 2
+    # union-порядок: ключи файла 1 в его порядке; новых ключей у файлов 2 и 3 нет
+    assert rows[0][0] == "2" and rows[-1][0] == "3824"
 
     # ключ "22" есть во всех трёх источниках -> значения из всех трёх
     row22 = next(row for row in rows if row[0] == "22")
@@ -134,5 +134,5 @@ def test_end_to_end_union_order_and_values(grid1, grid2, grid3):
 def test_end_to_end_coverage(grid1, grid2, grid3):
     agg = _build_aggregator(grid1, grid2, grid3)
     stats = agg.coverage_stats()
-    assert [covered for _, covered, _ in stats] == [48, 577, 25]
-    assert all(total == 577 for _, _, total in stats)
+    assert [covered for _, covered, _ in stats] == [3500, 3500, 1127]
+    assert all(total == 3500 for _, _, total in stats)

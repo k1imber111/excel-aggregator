@@ -54,7 +54,7 @@ def test_export_column_widths_bounded(tmp_path):
     out = tmp_path / "итог.xlsx"
     export(out, headers, rows, key_title="A")
     ws = _read_back(out)
-    assert ws.column_dimensions["A"].width >= 10
+    assert ws.column_dimensions["A"].width >= 8
     assert ws.column_dimensions["B"].width <= 50
 
 

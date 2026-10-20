@@ -29,7 +29,7 @@ def _paths(grid: SheetGrid) -> dict[int, list[str]]:
 @needs_samples
 @pytest.mark.parametrize("path, sheet, header, numbering, data", [
     (FILE1, SHEET1, [1, 2, 3, 4], 5, 6),
-    (FILE2, SHEET2, [1, 2, 3, 5], None, 7),     # строка 4 пуста, строка 6 — «район 2»
+    (FILE2, SHEET2, [1, 2, 3, 5], 4, 7),        # строка 4 — нумерация граф, 6 — «район 2»
     (FILE3, SHEET3, [4, 6, 7], 8, 9),           # строки 1–2 — подпись таблицы
 ])
 def test_samples_layout(path, sheet, header, numbering, data):

@@ -61,32 +61,35 @@ def test_full_scenario_end_to_end(tmp_path: Path) -> None:
     result = _run_app(script, cwd=PROJECT_ROOT)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert "Таблицы соединяются по названиям объектов" in result.stdout
-    assert "Строк: 577, столбцов: 5" in result.stdout
+    assert "Строк: 3500, столбцов: 5" in result.stdout
     assert "Запись проверена" in result.stdout
     assert "Непредвиденная ошибка" not in result.stdout
+    assert "Скрытых листов пропущено: 15" in result.stdout
 
     import openpyxl
 
     wb = openpyxl.load_workbook(out)
     ws = wb.active
-    # строка 1 — название таблицы, 2 — источники, 3–4 — шапка, с 5 — данные
+    # строка 1 — название, 2 — источники, 3–6 — шапка как в исходниках, с 7 — данные
     assert ws["A1"].value == "итог"
-    assert ws.max_row == 4 + 577
+    assert ws.max_row == 6 + 3500
     assert ws.max_column == 5
-    assert ws.freeze_panes == "B5"
-    assert ws.auto_filter.ref == "A4:E581"
+    assert ws.freeze_panes == "B7"
+    assert ws.auto_filter.ref == "A6:E3506"
+    merged = {str(r) for r in ws.merged_cells.ranges}
 
-    assert ws["A2"].value == "№ препятствия"
+    assert ws["A2"].value == "№ препятствия" and "A2:A6" in merged
     assert ws["B2"].value == FILE1.stem and ws["D2"].value == FILE2.stem
     assert ws["E2"].value == FILE3.stem
-    assert ws["B3"].value == "Наименование препятствия"
+    assert ws["B3"].value == "Наименование препятствия" and "B3:B6" in merged
     assert ws["C3"].value == "Полярные координаты относительно КТА"
-    assert ws["C4"].value == "Sп, м"
-    assert ws["D3"].value == "Местоположение"
-    assert ws["E3"].value == "Полярные координаты" and ws["E4"].value == "Sп, м"
+    assert ws["C4"].value == "Sп, м" and "C4:C6" in merged
+    assert ws["D3"].value == "Местоположение" and "D3:D6" in merged
+    assert ws["E3"].value == "Полярные\nкоординаты"     # перенос строки как в исходнике
+    assert ws["E4"].value == "Sп," and ws["E5"].value == "м"
 
-    rows = {str(r[0]): r for r in ws.iter_rows(min_row=5, values_only=True)}
-    assert len(rows) == 577
+    rows = {str(r[0]): r for r in ws.iter_rows(min_row=7, values_only=True)}
+    assert len(rows) == 3500
     # «22» есть во всех трёх источниках — все характеристики заполнены
     assert all(v is not None for v in rows["22"][1:])
     assert rows["22"][1] == "Строение на горе"
@@ -94,8 +97,8 @@ def test_full_scenario_end_to_end(tmp_path: Path) -> None:
     row2 = rows["2"]
     assert row2[1] == "Трубы котельной" and row2[2] is not None and row2[3] is not None
     assert row2[4] is None
-    # объект только из файла 2 — в конце списка, у файла 1 пусто
-    assert rows["3626"][1] is None and rows["3626"][3] is not None
+    # формат числа из исходника: Sп в каталоге показывается с одним знаком
+    assert ws["C7"].number_format == "0.0"
 
 
 def test_folder_and_all_columns(tmp_path: Path) -> None:
@@ -104,8 +107,8 @@ def test_folder_and_all_columns(tmp_path: Path) -> None:
     script = "\n".join(["1", str(SAMPLES), "", "", "", "", "", str(out), "н", "н", "3", ""])
     result = _run_app(script, cwd=PROJECT_ROOT)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    assert "Строк: 577, столбцов: 50" in result.stdout
-    assert "28850 ячеек данных совпали" in result.stdout
+    assert "Строк: 3500, столбцов: 50" in result.stdout
+    assert "175000 ячеек данных совпали" in result.stdout
 
 
 def test_instruction_screen_and_exit() -> None:
