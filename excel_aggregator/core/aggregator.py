@@ -45,6 +45,11 @@ class Aggregator:
 
     def build_table(self) -> tuple[list[str], list[list]]:
         """Собирает (headers, rows) итоговой таблицы."""
+        headers, rows, _ = self.build()
+        return headers, rows
+
+    def build(self) -> tuple[list[str], list[list], list[list[str | None]]]:
+        """Собирает (headers, rows, formats): formats — форматы чисел ячеек rows."""
         headers = [self.key_title]
         lookups: list[dict[str, int]] = []
         for keyset, config, _ in self._sources:
@@ -55,19 +60,24 @@ class Aggregator:
             lookups.append(lookup)
 
         rows: list[list] = []
+        formats: list[list[str | None]] = []
         for key in self.union_keys():
             row = [key]
+            row_formats: list[str | None] = [None]
             for (_, config, grid), lookup in zip(self._sources, lookups):
                 pos = lookup.get(self._match(key))
                 for char in config.char_columns:
                     if pos is None:
-                        row.append(None)
+                        cell = None
                     elif config.orientation is Orientation.VERTICAL:
-                        row.append(grid.value(pos, char))
+                        cell = (pos, char)
                     else:
-                        row.append(grid.value(char, pos))
+                        cell = (char, pos)
+                    row.append(None if cell is None else grid.value(*cell))
+                    row_formats.append(None if cell is None else grid.number_format(*cell))
             rows.append(row)
-        return headers, rows
+            formats.append(row_formats)
+        return headers, rows, formats
 
     def source_labels(self) -> list[str]:
         """Подпись каждого источника: имя файла; лист — если из файла их несколько."""
@@ -93,6 +103,28 @@ class Aggregator:
             columns = config.column_paths or [[title] for title in config.column_titles]
             paths.extend([label, *path] for path in columns)
         return paths
+
+    def header_blocks(self) -> list[list[tuple[object, str]]] | None:
+        """Шапка итога как в исходниках: на каждый столбец — уровни (id, текст).
+
+        Верхний уровень — подпись источника; у столбца названий он совпадает с
+        его заголовком. Одинаковый id у соседних ячеек — одна объединённая
+        ячейка. None — у источников нет header_cells (тогда шапку строят по
+        header_paths).
+        """
+        if not self._sources or not all(
+            cfg.header_cells or not cfg.char_columns for _, cfg, _ in self._sources
+        ):
+            return None
+        first = self._sources[0][1]
+        key_levels = [((-1, anchor), text) for anchor, text in first.key_header] or [
+            (("key",), self.key_title)
+        ]
+        blocks = [[key_levels[0], *key_levels]]
+        for i, (label, (_, config, _)) in enumerate(zip(self.source_labels(), self._sources)):
+            for levels in config.header_cells:
+                blocks.append([(("source", i), label), *(((i, a), t) for a, t in levels)])
+        return blocks
 
     def coverage_stats(self) -> list[tuple[str, int, int]]:
         """(имя источника, сколько ключей покрыто, всего ключей в объединении)."""
@@ -120,3 +152,4 @@ class Aggregator:
                     f"использовано первое вхождение): {examples}"
                 )
         return warnings
+

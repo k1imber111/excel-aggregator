@@ -50,8 +50,15 @@ class TableLayout:
     data_start: int = 0
 
 
+def _lines(value) -> str:
+    """Текст ячейки шапки как в исходнике: переносы строк сохраняются,
+    пробелы внутри строки схлопываются, пустые строки убираются."""
+    lines = (" ".join(line.split()) for line in str(format_cell(value)).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
 def _text(value) -> str:
-    """Текст ячейки шапки: число без «.0», пробелы и переносы — одним пробелом."""
+    """Текст ячейки шапки одной строкой: число без «.0», пробелы и переносы — одним пробелом."""
     return " ".join(str(format_cell(value)).split())
 
 
@@ -234,6 +241,84 @@ def _is_unit(grid: SheetGrid, r: int, c: int, text: str) -> str:
     return ""
 
 
+def _is_section_caption(grid: SheetGrid, layout: TableLayout, r: int, c: int) -> bool:
+    """Не единица в строке единиц под уже названным столбцом — подпись раздела.
+
+    В ПЗ-90 строка единиц начинается с «4 | Препятствия» под «№» и
+    «Аэронавигационные данные»: это заголовок раздела, а не часть названия графы.
+    """
+    if not _is_unit_row(grid, r) or _is_unit(grid, r, c, _text(grid.raw(r, c))):
+        return False
+    _, _, clo, chi = grid.span(r, c)
+    return any(
+        normalize_key(grid.raw(*grid.anchor(above, col))) is not None
+        for above in layout.header_rows if above < r
+        for col in range(clo, chi)
+        if grid.anchor(above, col)[0] < r
+    )
+
+
+def header_text(grid: SheetGrid, layout: TableLayout, r: int, c: int) -> str:
+    """Текст ячейки шапки (r, c) для итогового файла: как в исходнике, с переносами.
+
+    Единица измерения — в общем виде («0» перед «'» -> «°»); подпись раздела в
+    строке единиц — пусто. Ячейка внутри объединения — текст его первой ячейки.
+    """
+    ar, ac = grid.anchor(r, c)
+    value = grid.raw(ar, ac)
+    if normalize_key(value) is None:
+        return ""
+    unit = _is_unit(grid, ar, ac, _text(value))
+    if unit:
+        return unit
+    if _is_section_caption(grid, layout, ar, ac):
+        return ""
+    return _lines(value)
+
+
+def header_cells(
+    grid: SheetGrid, layout: TableLayout, columns: list[int]
+) -> list[list[tuple[tuple[int, int], str]]]:
+    """Шапка выбранных столбцов: на каждый столбец — уровни по строкам шапки.
+
+    Уровень — (первая ячейка объединения, текст). Одинаковая первая ячейка у
+    соседних столбцов или уровней значит, что в исходнике это одна
+    объединённая ячейка. Подпись над таблицей, нумерация граф и
+    строки-разделители в шапку не входят. Столбец, у которого под пустой
+    ячейкой только единицы, продолжает группу соседа слева («Высота» над «м»
+    и «фут» без объединения в исходнике). Столбец без единого заголовка
+    получает нижний уровень «Столбец B».
+    """
+    rows = layout.header_rows
+    sheet: list[list[tuple[tuple[int, int], str]]] = []
+    units: list[list[bool]] = []
+    for c in range(grid.ncols):
+        levels = [(grid.anchor(r, c), header_text(grid, layout, r, c)) for r in rows]
+        is_unit = [bool(_is_unit(grid, *anchor, text)) and bool(text) for anchor, text in levels]
+        if c > 0:
+            left, left_units = sheet[c - 1], units[c - 1]
+            for k, (_, text) in enumerate(levels):
+                if text or not left[k][1]:
+                    continue
+                below = [i for i in range(k + 1, len(rows)) if levels[i][1]]
+                left_below = [i for i in range(k + 1, len(rows)) if left[i][1]]
+                single = grid.span(*left[k][0])[3] - grid.span(*left[k][0])[2] == 1 or (
+                    c > 1 and sheet[c - 2][k][0] == left[k][0]
+                )
+                if (below and all(is_unit[i] for i in below) and single
+                        and left_below and all(left_units[i] for i in left_below)):
+                    levels[k] = left[k]
+        sheet.append(levels)
+        units.append(is_unit)
+    result = []
+    for c in columns:
+        levels = list(sheet[c])
+        if not any(text for _, text in levels):
+            levels = levels[:-1] + [((-1, c), f"Столбец {col_letter(c)}")]
+        result.append(levels)
+    return result
+
+
 def column_paths(grid: SheetGrid, layout: TableLayout) -> dict[int, list[str]]:
     """Название каждого столбца цепочкой уровней шапки, сверху вниз.
 
@@ -254,7 +339,7 @@ def column_paths(grid: SheetGrid, layout: TableLayout) -> dict[int, list[str]]:
                 continue
             seen.add(anchor)
             value = grid.raw(*anchor)
-            if normalize_key(value) is None:
+            if normalize_key(value) is None or _is_section_caption(grid, layout, *anchor):
                 continue
             text = _text(value)
             _, _, clo, chi = grid.span(*anchor)

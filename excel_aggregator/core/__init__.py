@@ -14,7 +14,7 @@ from .errors import (
 )
 from .exporter import export
 from .keys import KeySet, extract_keys
-from .layout import TableLayout, column_paths, detect_layout, layout_from
+from .layout import TableLayout, column_paths, detect_layout, header_cells, layout_from
 from .matcher import Candidate, find_key_candidates, suggest_join
 from .models import (
     Orientation,
@@ -55,6 +55,7 @@ __all__ = [
     "find_key_candidates",
     "fold_lookalikes",
     "format_cell",
+    "header_cells",
     "keys_equal",
     "layout_from",
     "load_workbook",
