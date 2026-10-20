@@ -81,6 +81,14 @@ _SOLO_FILL = 0.8
 # Дробные числа и даты — измерения, а не названия объектов
 _MEASURE_RE = re.compile(r"-?\d+[.,]\d+|\d{4}-\d{2}-\d{2}.*")
 _MEASURE_PENALTY = 0.3
+# Заголовок измерения: «Высота», «Вес», «…, м» — целые числа такого столбца не
+# названия объектов, даже если совпали между файлами
+_MEASURE_TITLE_RE = re.compile(
+    r"высот|длин|ширин|глубин|толщин|вес|масс|площад|объ[её]м|расстояни|дальност"
+    r"|скорост|температур|давлени|азимут|угол|координат|широт|долгот|превышени"
+    r"|,\s*(м|км|см|мм|кг|т|фут|футы|град|°|%)\.?$",
+    re.IGNORECASE,
+)
 _NUMERIC_PENALTY = 0.9
 # Ряд 1…N — нумерация строк («№ п/п»): совпадает у любых двух таблиц
 _ROW_NUMBER_PENALTY = 0.3
@@ -89,6 +97,8 @@ _POSITION_STEP = 0.05     # каждый столбец правее чуть м
 # Ниже этой оценки пересечение считается случайным, а не соединением:
 # два общих значения в левых столбцах проходят, «1, 2, 3» в обоих файлах — нет
 _MIN_JOIN_SCORE = 1.5
+_NUMBER_RE = re.compile(r"-?\d+([.,]\d+)?")
+_NAMES_UNIQUENESS = 0.8
 
 
 @dataclass
@@ -99,6 +109,7 @@ class _Column:
     values: set[str]          # различные значения области данных
     uniqueness: float         # доля неповторяющихся значений
     title: str = ""
+    named: bool = False       # в таблице есть свой текстовый столбец уникальных названий
 
     @property
     def is_row_number(self) -> bool:
@@ -109,10 +120,18 @@ class _Column:
         )
 
     @property
+    def is_text_names(self) -> bool:
+        """Текст без повторов: «Опора 1», «Мачта 2» — похоже на названия объектов."""
+        texts = sum(1 for v in self.values if not _NUMBER_RE.fullmatch(v))
+        return self.uniqueness >= _NAMES_UNIQUENESS and texts > len(self.values) / 2
+
+    @property
     def quality(self) -> float:
         """Насколько столбец похож на названия объектов (0..1)."""
         half = len(self.values) / 2
-        if sum(1 for v in self.values if _MEASURE_RE.fullmatch(v)) > half:
+        if sum(1 for v in self.values if _MEASURE_RE.fullmatch(v)) > half or (
+            self.title and _MEASURE_TITLE_RE.search(self.title)
+        ):
             penalty = _MEASURE_PENALTY
         elif sum(1 for v in self.values if v.isdigit()) > half:
             penalty = _NUMERIC_PENALTY   # номера бывают названиями, но текст вероятнее
@@ -132,6 +151,9 @@ def _columns(grid: SheetGrid, data_start: int, titles: dict[int, str] | None) ->
             columns.append(
                 _Column(c, distinct, len(distinct) / len(values), (titles or {}).get(c, ""))
             )
+    named = any(col.is_text_names for col in columns)
+    for col in columns:
+        col.named = named
     return columns
 
 
@@ -151,6 +173,10 @@ def _pair_score(a: _Column, b: _Column) -> float:
     """
     shared = len(a.values & b.values)
     if shared < _MIN_MATCHES:
+        return 0.0
+    if a.is_row_number and b.is_row_number and a.named and b.named:
+        # «№ п/п» 1…N есть в любых двух таблицах; когда у обеих есть свои
+        # названия объектов, нумерация строк их не соединяет
         return 0.0
     score = shared * min(a.uniqueness, b.uniqueness) * a.quality * b.quality
     if a.is_row_number and b.is_row_number:
@@ -223,7 +249,7 @@ def suggest_join(
 
     result = list(solo)
     result[anchor_table] = anchor.index
-    known = _Column(0, set(anchor.values), 1.0, anchor.title)
+    known = _Column(0, set(anchor.values), 1.0, anchor.title, anchor.named)
     pending = set(range(len(tables))) - {anchor_table}
     while pending:
         scored = {i: best_against(i, known) for i in pending}

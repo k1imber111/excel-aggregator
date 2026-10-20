@@ -10,7 +10,12 @@ from .models import Orientation, SheetGrid
 from .normalize import normalize_key
 
 # Строки итогов и примечаний — не объекты
-_SUMMARY_RE = re.compile(r"(итого|всего|примечани[ея]|total)\b", re.IGNORECASE)
+# «Итого», «Итого:», «Итого 5», «Всего по району» — но не «Всего Мачта»: там
+# за словом идёт название объекта
+_SUMMARY_RE = re.compile(
+    r"примечани[ея]\b|(итого|всего|total)(\s*$|\s*[:;.,]|\s+по\b|\s+[\d\s.,:;-]+$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass

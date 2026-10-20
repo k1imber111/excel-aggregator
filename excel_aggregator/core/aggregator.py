@@ -137,6 +137,25 @@ class Aggregator:
             stats.append((name, covered, len(keys)))
         return stats
 
+    def merged_names(self) -> list[list[tuple[str, str]]]:
+        """По каждому источнику: пары названий, которые сравнение считает одним
+        объектом (A1 латиницей и А1 кириллицей при склейке двойников).
+
+        Из такой пары в итог попадает первая строка, вторая — нет.
+        """
+        result = []
+        for keyset, _, _ in self._sources:
+            first: dict[str, str] = {}
+            pairs = []
+            for key in keyset.keys:
+                form = self._match(key)
+                if form in first:
+                    pairs.append((first[form], key))
+                else:
+                    first[form] = key
+            result.append(pairs)
+        return result
+
     def duplicate_warnings(self) -> list[str]:
         """Сообщения о дубликатах ключей внутри источников (для UI)."""
         warnings = []
@@ -150,6 +169,13 @@ class Aggregator:
                 warnings.append(
                     f"{name}: дубликаты ключей ({len(keyset.duplicates)} шт., "
                     f"использовано первое вхождение): {examples}"
+                )
+        for (_, config, _), pairs in zip(self._sources, self.merged_names()):
+            if pairs:
+                name = f"{Path(config.file_path).name} / {config.sheet_name}"
+                examples = ", ".join(f"«{a}» и «{b}»" for a, b in pairs[:5])
+                warnings.append(
+                    f"{name}: названия считаются одним объектом, взята первая строка: {examples}"
                 )
         return warnings
 

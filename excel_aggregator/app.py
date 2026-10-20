@@ -939,9 +939,15 @@ class AggregatorApp:
             ["Источник", "Данные", "Названий", "Объектов заполнено", "Столбцов перенесено"],
             rows,
         )
-        for table in tables:
+        for table, pairs in zip(tables, aggregator.merged_names()):
             for warning in self._warnings(table, shared.get(id(table), 0), len(tables)):
                 self.ui.warn(f"{table.label}: {warning}")
+            if pairs:
+                examples = ", ".join(f"«{a}» и «{b}»" for a, b in pairs[:3])
+                self.ui.warn(
+                    f"{table.label}: названия считаются одним объектом, взята первая "
+                    f"строка ({len(pairs)} шт.): {examples}"
+                )
         self.ui.success(
             f"Запись проверена: файл перечитан, {checked} ячеек данных совпали с исходными."
         )
