@@ -37,6 +37,9 @@ _SCAN_ROWS = 200      # в скольких верхних непустых ст
 _PROFILE_ROWS = 50    # по скольким строкам определяем числовые столбцы
 _NUMERIC_COLUMN = 0.6
 _FREQUENT_COLUMN = 0.5  # столбец таблицы: заполнен хотя бы в половине строк данных
+_YEARS = (1900, 2100)   # целые в этом диапазоне в строке шапки — годы
+_FULL_HEADER = 0.75     # полная строка шапки закрывает столько столбцов таблицы
+_CAPTION_MIN_COLUMNS = 4
 
 
 @dataclass
@@ -149,6 +152,49 @@ def _is_header_like(grid: SheetGrid, r: int, numeric_cols: set[int]) -> bool:
     return bool(cells) and not any(_is_numeric(grid.raw(r, c)) for c in cells)
 
 
+def _int_value(value) -> int | None:
+    """Целое значение ячейки (2023, 2023.0, «2023») или None."""
+    key = normalize_key(value)
+    return int(key) if key is not None and re.fullmatch(r"-?\d{1,6}", key) else None
+
+
+def _is_year(value: int | None) -> bool:
+    return value is not None and _YEARS[0] <= value <= _YEARS[1]
+
+
+def _is_number_header(grid: SheetGrid, r: int, below: list[int]) -> bool:
+    """Шапка из чисел: «Объект | 2023 | 2024» или «Объект | 1 | 2».
+
+    Числа строки — целые подряд (шаг 1), и ниже в этих столбцах нет такой же
+    последовательности; для годов — ниже не годы. Строка данных «О1 | 1 | 2»
+    над «О2 | 3 | 4» остаётся данными.
+    """
+    cells = [c for c in _filled(grid, r) if _int_value(grid.raw(r, c)) is not None]
+    ints = [_int_value(grid.raw(r, c)) for c in cells]
+    if len(ints) < 2 or any(b - a != 1 for a, b in zip(ints, ints[1:])):
+        return False
+    if all(map(_is_year, ints)):
+        return not any(_is_year(_int_value(grid.raw(n, c))) for n in below for c in cells)
+    return not any(
+        all(b - a == 1 for a, b in zip(vals, vals[1:]))
+        for n in below
+        if None not in (vals := [_int_value(grid.raw(n, c)) for c in cells])
+    )
+
+
+def _is_subheader(grid: SheetGrid, r: int, above: int | None) -> bool:
+    """Подзаголовок группы: строка без чисел, часть ячеек которой стоит под
+    объединённой по горизонтали ячейкой строки выше («улица | дом» под «Адрес»)."""
+    if above is None or any(_is_numeric(grid.raw(r, c)) for c in _filled(grid, r)):
+        return False
+    if len(_filled(grid, above)) < 2:
+        return False  # над строкой подпись таблицы, а не строка шапки с группой
+    return any(
+        (span := grid.span(above, c))[3] - span[2] > 1 and span[0] <= above
+        for c in _filled(grid, r)
+    )
+
+
 def detect_layout(grid: SheetGrid) -> TableLayout | None:
     """Находит таблицу на листе. None — таблицы нет или она не распознана.
 
@@ -175,6 +221,8 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
         if numbering is not None and r <= numbering:
             continue
         if not dense(r) or _merged_share(grid, r) > _MERGED_SHARE:
+            continue
+        if i > 0 and _is_subheader(grid, r, nonempty[i - 1]):
             continue
         following = nonempty[i + 1:i + 1 + _LOOKAHEAD]
         if not all(dense(n) and _similar(grid, r, n) >= _SIMILARITY for n in following):
@@ -206,6 +254,7 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
                 and not any(c in numeric_cols for c in cells)
                 and min(_filled(grid, r)) in cells
                 and all(normalize_key(grid.value(header, c)) is not None for c in cells)
+                and not _is_subheader(grid, above, header)
             )
             if not has_number and not text_object:
                 break
@@ -216,8 +265,9 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
         start = i
         if numeric_cols:
             # Строки блока с текстом на месте чисел — шапка без объединений
-            while start < len(nonempty) - 1 and _is_header_like(
-                grid, nonempty[start], numeric_cols
+            while start < len(nonempty) - 1 and (
+                _is_header_like(grid, nonempty[start], numeric_cols)
+                or _is_number_header(grid, nonempty[start], nonempty[start + 1:start + 4])
             ):
                 start += 1
         elif i + 1 < len(nonempty) and not layout_from(grid, r, numbering).header_rows:
@@ -242,12 +292,28 @@ def layout_from(
     """Раскладка по известной первой строке данных: всё, что выше, — шапка."""
     layout = TableLayout(data_start=data_start)
     frequent = _table_columns(grid, data_start)
+    # Первая полная строка шапки: всё разреженное и необъединённое выше — подписи
+    # («Реестр объектов | Дата: 01.01.2024»). В узкой таблице шапка из двух
+    # ячеек — норма, там правило не действует.
+    full = 0
+    if len(frequent) >= _CAPTION_MIN_COLUMNS:
+        full = next(
+            (r for r in range(min(data_start, grid.nrows))
+             if len(_filled(grid, r)) >= _FULL_HEADER * len(frequent)),
+            data_start,
+        )
     for r in range(min(data_start, grid.nrows)):
         cells = _filled(grid, r)
         if not cells:
             continue
         if r == numbering or (numbering is None and _is_numbering(grid, r)):
             layout.numbering_row = r
+            continue
+        if r < full and len(cells) <= 2 and all(
+            grid.span(r, c) == (r, r + 1, c, c + 1) for c in cells
+        ):
+            if not layout.title and not layout.header_rows:
+                layout.title = " ".join(_text(grid.raw(r, c)) for c in cells)
             continue
         if len(cells) == 1:
             rlo, rhi, clo, chi = grid.span(r, cells[0])
@@ -293,6 +359,10 @@ def _is_section_caption(grid: SheetGrid, layout: TableLayout, r: int, c: int) ->
     «Аэронавигационные данные»: это заголовок раздела, а не часть названия графы.
     """
     if not _is_unit_row(grid, r) or _is_unit(grid, r, c, _text(grid.raw(r, c))):
+        return False
+    # Раздел начинается с номера («4 | Препятствия»); «п/п» под «№» — вторая
+    # строка заголовка, а не подпись
+    if not _is_numeric(grid.raw(r, min(_filled(grid, r)))):
         return False
     _, _, clo, chi = grid.span(r, c)
     # Подпись раздела стоит в начале строки, левее единиц; ячейка правее
