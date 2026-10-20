@@ -511,6 +511,9 @@ class AggregatorApp:
                     header = f"строка {head[0]}"
                 else:
                     header = f"строки {head[0]}–{head[-1]}"
+                if layout.numbering_row is not None:
+                    # Видно пользователю: строку «1 | 2 | 3» могли принять за нумерацию
+                    header += f"; нумерация граф — строка {layout.numbering_row + 1}"
                 data = f"строки {layout.data_start + 1}–{table.grid.nrows}"
             sheet = (
                 table.sheet.name.strip()
