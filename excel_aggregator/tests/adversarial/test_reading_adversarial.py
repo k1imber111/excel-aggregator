@@ -85,13 +85,34 @@ def test_first_data_row_with_only_text_note_is_data():
 
 
 def test_small_ints_first_data_row_is_not_numbering():
-    """Строка данных 1, 2, 3 (счёт, не нумерация граф) под шапкой не теряется."""
+    """Строка данных 1, 2, 3 под шапкой неотличима от нумерации граф.
+
+    Решение (волна 2, L3): считается нумерацией — она есть во всех образцах, а
+    правило «не нумерация над числовыми столбцами» теряло настоящую нумерацию.
+    Ошибка не молчаливая: экран проверки показывает номер строки нумерации.
+    """
     rows = [
         ["Ключ", "A", "B"],
         [1, 2, 3], [4, 5, 6], [7, 8, 9],
     ]
     layout = detect_layout(G(rows))
-    assert layout.data_start == 1, f"data_start={layout.data_start}, numbering={layout.numbering_row}"
+    assert layout.numbering_row == 1 and layout.data_start == 2
+
+
+def test_review_screen_shows_numbering_row(tmp_path):
+    from excel_aggregator.app import AggregatorApp
+
+    book = openpyxl.Workbook()
+    for row in [["Ключ", "A", "B"], [1, 2, 3], [4, 5, 6], [7, 8, 9]]:
+        book.active.append(row)
+    book.save(tmp_path / "т.xlsx")
+    app = AggregatorApp()
+    app.books = [load_workbook(tmp_path / "т.xlsx")]
+    app._analyse()
+    app.ui.console.width = 300   # без переноса текста в ячейках таблицы
+    with app.ui.console.capture() as captured:
+        app._show_review()
+    assert "нумерация граф — строка 2" in captured.get()
 
 
 def test_title_merged_over_table_with_far_stray_cell_stays_title():
