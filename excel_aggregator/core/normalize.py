@@ -5,6 +5,16 @@ from __future__ import annotations
 import re
 
 _INT_RE = re.compile(r"-?\d+")
+# Невидимые символы (нулевой пробел, BOM, соединители): в ячейке их не видно,
+# но они делали «Мачта 1» и «Мачта 1» + U+200B разными названиями
+_INVISIBLE = dict.fromkeys((0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
+# Длиннее — уже не число, а код: int() на 4300+ цифрах падает
+_MAX_DIGITS = 18
+
+
+def strip_invisible(text: str) -> str:
+    """Текст без невидимых символов."""
+    return text.translate(_INVISIBLE)
 _FLOAT_RE = re.compile(r"-?\d+[.,]\d+")
 
 
@@ -33,9 +43,11 @@ def normalize_key(v) -> str | None:
     if isinstance(v, float):
         return str(int(v)) if v.is_integer() else str(v)
 
-    s = " ".join(str(v).split())
+    s = " ".join(strip_invisible(str(v)).split())
     if not s:
         return None
+    if len(s) > _MAX_DIGITS:
+        return s
 
     if _INT_RE.fullmatch(s) and not _has_leading_zero(s):
         return str(int(s))

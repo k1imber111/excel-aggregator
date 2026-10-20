@@ -21,6 +21,9 @@ _UNIT_VALUES = {
     "м", "метр", "метры", "км", "см", "мм",
     "фт", "фут", "футы",
     "°", "'", '"', "′", "″", "с", "град", "град.", "мин", "мин.", "сек", "сек.",
+    "кг", "г", "т", "тн", "л", "мл", "ч", "час", "сут", "%", "шт", "шт.",
+    "руб", "руб.", "м2", "м²", "м3", "м³", "км/ч", "м/с", "га", "°c", "°с",
+    "вт", "квт", "па", "кпа", "мпа",
 }
 # Знак градуса, набранный нулём или буквой «о» (стоит слева от знака минут)
 _DEGREE_MARKS = {"0", "о", "o"}
@@ -33,6 +36,7 @@ _LOOKAHEAD = 2        # со сколькими следующими строк�
 _SCAN_ROWS = 200      # в скольких верхних непустых строках ищем нумерацию граф
 _PROFILE_ROWS = 50    # по скольким строкам определяем числовые столбцы
 _NUMERIC_COLUMN = 0.6
+_FREQUENT_COLUMN = 0.5  # столбец таблицы: заполнен хотя бы в половине строк данных
 
 
 @dataclass
@@ -92,10 +96,14 @@ def _is_numbering(grid: SheetGrid, r: int) -> bool:
 
 
 def _merged_share(grid: SheetGrid, r: int) -> float:
-    """Доля ячеек строки, входящих в объединения."""
+    """Доля ячеек строки, объединённых по горизонтали.
+
+    Объединение только по вертикали шапку не выдаёт: так в данных
+    объединяют повторяющееся значение («Север» на три строки объектов).
+    """
     merged = sum(
         1 for c in range(grid.ncols)
-        if (span := grid.span(r, c))[1] - span[0] > 1 or span[3] - span[2] > 1
+        if (span := grid.span(r, c))[3] - span[2] > 1
     )
     return merged / max(1, grid.ncols)
 
@@ -154,6 +162,13 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
     nonempty = [r for r, n in enumerate(fills) if n]
     # Нумерация граф стоит под шапкой, поэтому первую непустую строку не проверяем
     numbering = next((r for r in nonempty[1:_SCAN_ROWS] if _is_numbering(grid, r)), None)
+    if numbering is not None:
+        # Нумерация граф стоит и над текстовыми столбцами; строка «1 | 2 | 3» над
+        # одними числами — первый объект, а не нумерация
+        below = [r for r in nonempty if r > numbering][:_PROFILE_ROWS]
+        numeric_below = _numeric_columns(grid, below)
+        if below and all(c in numeric_below for c in _filled(grid, numbering)):
+            numbering = None
 
     def dense(r: int) -> bool:
         return fills[r] >= _DENSE_SHARE * widest
@@ -181,10 +196,17 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
                 break
             if _is_lone_cell_row(grid, above):
                 continue  # подпись между строками данных не прерывает таблицу
-            has_number = any(
-                _is_numeric(grid.raw(above, c)) for c in _filled(grid, above) if c in numeric_cols
+            cells = _filled(grid, above)
+            has_number = any(_is_numeric(grid.raw(above, c)) for c in cells if c in numeric_cols)
+            if _is_unit_row(grid, above):
+                break
+            # Объект, у которого заполнены только текстовые графы («Объект А |
+            # примечание»), под полной строкой шапки — тоже данные
+            text_object = (
+                not has_number and j > 0 and dense(nonempty[j - 1])
+                and not any(c in numeric_cols for c in cells)
             )
-            if _is_unit_row(grid, above) or not has_number:
+            if not has_number and not text_object:
                 break
             first = j
         if first < i:
@@ -203,11 +225,22 @@ def detect_layout(grid: SheetGrid) -> TableLayout | None:
     return None
 
 
+def _table_columns(grid: SheetGrid, data_start: int) -> list[int]:
+    """Столбцы таблицы: заполненные хотя бы в половине первых строк данных."""
+    rows = [r for r in range(data_start, grid.nrows) if _filled(grid, r)][:_PROFILE_ROWS]
+    return [
+        c for c in range(grid.ncols)
+        if rows and sum(1 for r in rows if normalize_key(grid.value(r, c)) is not None)
+        >= _FREQUENT_COLUMN * len(rows)
+    ]
+
+
 def layout_from(
     grid: SheetGrid, data_start: int, numbering: int | None = None
 ) -> TableLayout:
     """Раскладка по известной первой строке данных: всё, что выше, — шапка."""
     layout = TableLayout(data_start=data_start)
+    columns = _table_columns(grid, data_start)
     for r in range(min(data_start, grid.nrows)):
         cells = _filled(grid, r)
         if not cells:
@@ -216,10 +249,16 @@ def layout_from(
             layout.numbering_row = r
             continue
         if len(cells) == 1:
-            rlo, _, clo, chi = grid.span(r, cells[0])
-            wide = chi - clo >= max(2, grid.ncols / 2)
-            # Одиночная ячейка вне объединений — подпись или разделитель («район 2»)
-            lone = chi - clo == 1 and not any(
+            rlo, rhi, clo, chi = grid.span(r, cells[0])
+            # Подпись над таблицей объединена на всю её ширину; группа над
+            # частью столбцов — уровень шапки
+            wide = chi - clo >= 2 and (
+                clo <= columns[0] and chi > columns[-1] if columns
+                else chi - clo >= max(2, grid.ncols / 2)
+            )
+            # Одиночная ячейка вне объединений — подпись или разделитель («район 2»);
+            # заголовок, объединённый по вертикали со строками ниже, — шапка
+            lone = chi - clo == 1 and rhi - rlo == 1 and not any(
                 grid.span(r, c)[0] < r for c in range(grid.ncols)
             )
             if wide or lone:
@@ -250,6 +289,14 @@ def _is_section_caption(grid: SheetGrid, layout: TableLayout, r: int, c: int) ->
     if not _is_unit_row(grid, r) or _is_unit(grid, r, c, _text(grid.raw(r, c))):
         return False
     _, _, clo, chi = grid.span(r, c)
+    # Подпись раздела стоит в начале строки, левее единиц; ячейка правее
+    # первой единицы — непривычная единица («кг»), а не подпись
+    first_unit = min(
+        (u for u in _filled(grid, r) if _is_unit(grid, r, u, _text(grid.raw(r, u)))),
+        default=grid.ncols,
+    )
+    if clo > first_unit:
+        return False
     return any(
         normalize_key(grid.raw(*grid.anchor(above, col))) is not None
         for above in layout.header_rows if above < r

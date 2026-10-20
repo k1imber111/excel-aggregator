@@ -9,11 +9,14 @@ Merged cells разворачиваются, ячейки-ошибки (#REF! и
 
 from __future__ import annotations
 
+import re
 import zipfile
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import xlrd
 from openpyxl.styles.numbers import BUILTIN_FORMATS
+from openpyxl.utils.datetime import to_excel
 
 from .errors import (
     CorruptedFileError,
@@ -22,6 +25,7 @@ from .errors import (
     PathNotFoundError,
 )
 from .models import SheetGrid, Workbook
+from .normalize import strip_invisible
 
 _OLE2_SIGNATURE = b"\xd0\xcf\x11\xe0"
 _ZIP_SIGNATURE = b"PK"
@@ -34,8 +38,8 @@ _ERROR_VALUES = {
 
 
 def _is_empty(v) -> bool:
-    """Пустая ячейка: None или строка из одних пробелов."""
-    return v is None or (isinstance(v, str) and v.strip() == "")
+    """Пустая ячейка: None или строка из одних пробелов и невидимых символов."""
+    return v is None or (isinstance(v, str) and strip_invisible(v).strip() == "")
 
 
 def _real_area(data: list[list]) -> tuple[int, int]:
@@ -57,6 +61,25 @@ def _format(text: str | None) -> str | None:
     if not text or text.casefold() == "general":
         return None
     return text
+
+
+# Знаки цифр формата вне кавычек и экранирования: «0», «#», «?»
+_DIGIT_PLACEHOLDER_RE = re.compile(r"[0#?]")
+_FORMAT_LITERAL_RE = re.compile(r'"[^"]*"|\\.|\[[^\]]*\]')
+
+
+def _xlsx_value(value, fmt: str | None):
+    """Значение ячейки .xlsx; число, принятое openpyxl за дату, — снова число.
+
+    openpyxl считает датой любой формат с латинскими d/m/y/h/s, в том числе
+    «0 m» (метры, пробел экранирован). Формат с цифровыми знаками 0/#/? — числовой: такую ячейку
+    возвращаем порядковым числом, как она записана в файле.
+    """
+    if isinstance(value, (datetime, date, time, timedelta)) and fmt and (
+        _DIGIT_PLACEHOLDER_RE.search(_FORMAT_LITERAL_RE.sub("", fmt))
+    ):
+        return to_excel(value)
+    return value
 
 
 def _xls_format(book, xf_index: int) -> str | None:
@@ -147,7 +170,7 @@ def _xls_grids(path: Path, book) -> Workbook:
                         row.append(xlrd.xldate_as_datetime(cell.value, book.datemode))
                     except (ValueError, OverflowError):
                         row.append(cell.value)
-                elif isinstance(cell.value, str) and not cell.value.strip():
+                elif _is_empty(cell.value):
                     row.append(None)
                 else:
                     row.append(cell.value)
@@ -200,11 +223,10 @@ def _load_xlsx(path: Path) -> Workbook:
         formats = []
         errors = 0
         for cells in ws.iter_rows():
-            row = [cell.value for cell in cells]
+            row = [_xlsx_value(cell.value, cell.number_format) for cell in cells]
             errors += sum(1 for v in row if isinstance(v, str) and v in _ERROR_VALUES)
             data.append([
-                None if (v is None or (isinstance(v, str) and v.strip() == "") or v in _ERROR_VALUES)
-                else v
+                None if _is_empty(v) or v in _ERROR_VALUES else v
                 for v in row
             ])
             formats.append([_format(cell.number_format) for cell in cells])
