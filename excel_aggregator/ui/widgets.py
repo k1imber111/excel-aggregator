@@ -12,7 +12,7 @@ from rich.text import Text
 
 from ..core.models import col_letter
 from ..core.normalize import format_cell
-from .nav import HINT, HINT_NO_BUILD, Command, parse_command
+from .nav import HINT, HINT_NO_BUILD, HINT_SKIP, Command, is_skip, parse_command
 
 _TITLE = "АГРЕГАТОР EXCEL-ТАБЛИЦ"
 _AUTHOR = "Автор: Иван Журавлев"
@@ -78,9 +78,10 @@ class UI:
             return
         self.console.input("[dim]Нажмите Enter, чтобы продолжить...[/]")
 
-    def hint(self, allow_build: bool = False) -> None:
+    def hint(self, allow_build: bool = False, allow_skip: bool = False) -> None:
         """Строка-подсказка с навигационными командами."""
-        self.console.print(f"[dim]{HINT if allow_build else HINT_NO_BUILD}[/]")
+        text = HINT_SKIP if allow_skip else HINT if allow_build else HINT_NO_BUILD
+        self.console.print(f"[dim]{text}[/]")
 
     # --- таблицы ----------------------------------------------------------
 
@@ -182,10 +183,12 @@ class UI:
             self.warn(f"Варианта с номером {num} нет — выберите от 1 до {len(options)}.")
 
     def multi_select(self, title: str, items: list[str], default_all: bool = False,
-                     allow_build: bool = False) -> list[int] | Command:
+                     allow_build: bool = False,
+                     allow_skip: bool = False) -> list[int] | Command:
         """Мультивыбор номеров: «1,3» / «1-3» / «все» / «кроме: 2,4».
 
         default_all — пустой ввод (Enter) выбирает все пункты.
+        allow_skip — команда «п» возвращает Command.SKIP (пропустить лист целиком).
         """
         self.console.print(f"[bold]{escape(title)}[/]")
         for i, item in enumerate(items, start=1):
@@ -195,11 +198,13 @@ class UI:
             + "Отдельные номера: 2,4; диапазоны: 2-5, 8, 12-16; "
             "всё кроме указанных: «кроме: 2,4» или «кроме: 2-5, 8».[/]"
         )
-        self.hint(allow_build=allow_build)
+        self.hint(allow_build=allow_build, allow_skip=allow_skip)
         while True:
             raw = self.console.input("[bold cyan]Ваш выбор:[/] ").strip()
             if not raw and default_all:
                 return list(range(len(items)))
+            if allow_skip and is_skip(raw):
+                return Command.SKIP
             cmd = parse_command(raw)
             if cmd is not None:
                 if cmd is Command.BUILD and not allow_build:

@@ -774,37 +774,60 @@ class AggregatorApp:
 
     def _step_columns(self):
         tables = self._enabled()
-        index = 0
-        while index < len(tables):
+        index, step = 0, 1   # step: +1 — идём вперёд, -1 — после команды «назад»
+        while 0 <= index < len(tables):
             table = tables[index]
             columns = self._data_columns(table)
             if not columns:
+                # Лист без характеристик проходим в том же направлении, что и до него
                 table.chosen = []
-                index += 1
+                index += step
                 continue
             self.ui.screen(f"Шаг 3 из 3. Столбцы ({index + 1} из {len(tables)})")
             self.ui.explain(
                 f"Таблица: {table.label}\n"
                 "Выберите столбцы, которые нужно перенести в итоговый файл. Нажмите Enter,\n"
                 "чтобы перенести все, или введите номера нужных столбцов.\n"
-                "Столбец с названиями объектов уже учтён — он станет первым столбцом итога."
+                "Столбец с названиями объектов уже учтён — он станет первым столбцом итога.\n"
+                "Лист не нужен — введите «п» (пропустить): он не попадёт в итог."
             )
             items = [
                 f"{col_letter(c)} — {table.title(c)} (напр.: {self._samples(table, c)})"
                 for c in columns
             ]
             selected = self.ui.multi_select(
-                "Столбцы для переноса", items, default_all=True, allow_build=True
+                "Столбцы для переноса", items, default_all=True, allow_build=True,
+                allow_skip=True,
             )
             if selected is Command.BACK:
-                if index == 0:
-                    return Command.BACK
                 index -= 1
+                step = -1
+                continue
+            if selected is Command.SKIP:
+                if sum(t.enabled for t in tables) <= 1:
+                    self.ui.warn(
+                        "Нельзя пропустить единственный лист: в итоговый файл "
+                        "должна попасть хотя бы одна таблица."
+                    )
+                    self.ui.pause()
+                    continue
+                table.enabled = False   # как «Не использовать этот источник» на шаге 2
+                table.chosen = None
+                index += 1
+                step = 1
                 continue
             if isinstance(selected, Command):
                 return selected  # «собрать»: у оставшихся таблиц берутся все столбцы
             table.chosen = [columns[i] for i in selected]
+            table.enabled = True    # лист мог быть пропущен до возврата «назад»
             index += 1
+            step = 1
+        if index < 0:
+            return Command.BACK
+        if not self._enabled():
+            self.ui.warn("Не осталось ни одной таблицы для итогового файла.")
+            self.ui.pause()
+            return Command.BACK
         return None
 
     # ------------------------------------------------------------------

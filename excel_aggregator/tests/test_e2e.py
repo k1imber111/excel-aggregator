@@ -123,3 +123,28 @@ def test_bad_path_then_cancel() -> None:
     result = _run_app(script, cwd=PROJECT_ROOT)
     assert result.returncode == 0
     assert "Файл не найден" in result.stdout
+
+
+def test_skip_sheet_command_leaves_source_out_of_result(tmp_path: Path) -> None:
+    # Файл 2 на шаге 3 пропущен командой «п» — его столбцов в итоге нет
+    out = tmp_path / "без второго.xlsx"
+    script = "\n".join([
+        "1", str(FILE1), str(FILE2), str(FILE3), "",
+        "",                                 # найденное верно
+        "2,3",                              # файл 1
+        "п",                                # файл 2 — пропустить
+        "2",                                # файл 3
+        str(out), "н", "н", "3", "",
+    ])
+    result = _run_app(script, cwd=PROJECT_ROOT)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "Непредвиденная ошибка" not in result.stdout
+    assert "Запись проверена" in result.stdout
+
+    import openpyxl
+
+    ws = openpyxl.load_workbook(out).active
+    sources = [c.value for c in ws[2] if c.value]
+    assert FILE2.stem not in sources
+    assert FILE1.stem in sources and FILE3.stem in sources
+    assert ws.max_column == 4
